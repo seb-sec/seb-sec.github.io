@@ -1,0 +1,36 @@
+I"$<p>I participated in the Secedu ctf event in 2019 on the 1st November as part of the blue team (in name alone). I was part of the group in the team focusing on binary exploitation, while the other group focused on the web challenges. We managed to solve 2 binary challenges on the day, with the web group solving quite a few more. We ended up winning the competition at the end of the day, it was a great experience!</p>
+
+<p><br />
+<!--more-->
+<br />
+<img src="/assets/images/secedu2019/win.jpg" alt="seceductf2019" /></p>
+
+<p><br />
+The ctf was hosted on a google-esque site, where the teams received challenges, submitted flags, and even communicated with other teams by email, which was really cool!</p>
+
+<p><br />
+<img src="/assets/images/secedu2019/mail.jpg" alt="seceductf2019-mail" /></p>
+
+<p><br /></p>
+
+<p>One of the challenges I worked on (called shell), represented a login system where you could login, set an access level and attempt to access a flag function. However, you were restricted from setting your access level to the required level to use the getflag feature.</p>
+
+<p><br />
+<img src="/assets/images/secedu2019/shell.jpg" alt="secedu2019-shell" /></p>
+
+<p><br />
+Looking through the disassembly, I began to get an idea of what the data structures looked like and how it was handled. This is my idea of what the user structure looked like:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="n">user</span> <span class="p">{</span>
+  <span class="kt">char</span> <span class="o">*</span><span class="n">name</span><span class="p">;</span>
+  <span class="kt">long</span> <span class="n">access_level</span><span class="p">;</span>
+<span class="p">};</span>
+
+</code></pre></div></div>
+
+<p>There’s a call to <code class="highlighter-rouge">malloc()</code> with a size argument of 0x10 given, which is enough for a pointer and an 8 byte number on 64-bit architecture- this is the user struct. The program calls <code class="highlighter-rouge">strdup()</code> on the user provided input when logging in to set the <code class="highlighter-rouge">name</code> field. The <code class="highlighter-rouge">logout()</code> function will only free this <code class="highlighter-rouge">name</code> field that was obtained by <code class="highlighter-rouge">strdup</code>.</p>
+
+<p>At no point is there an attempt made to clear our this memory block. This means that if we create a name of similar size to the user struct then logout to free the name memory block we will now have a free chunk of memory with our data in the free chunk list.</p>
+
+<p>When we login again, <code class="highlighter-rouge">malloc</code> will first look in this free list, find the correctly sized free chunk and use that for the user struct. Since there was no attempt made to clear out the data in this chunk, we can get arbitrary input in the <code class="highlighter-rouge">access_level</code>- in this case the number 9. This allows us to use the <code class="highlighter-rouge">getflag</code> command and get our flag.</p>
+:ET

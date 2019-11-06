@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset='utf-8'>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/assets/css/style.css?v=">
+
+<!-- Begin Jekyll SEO tag v2.6.1 -->
+<title>Secedu ctf 2019 | seb-sec</title>
+<meta name="generator" content="Jekyll v4.0.0" />
+<meta property="og:title" content="Secedu ctf 2019" />
+<meta name="author" content="seb-sec" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="I participated in the Secedu ctf event in 2019 on the 1st November as part of the blue team (in name alone). I was part of the group in the team focusing on binary exploitation, while the other group focused on the web challenges. We managed to solve 2 binary challenges on the day, with the web group solving quite a few more. We ended up winning the competition at the end of the day, it was a great experience!" />
+<meta property="og:description" content="I participated in the Secedu ctf event in 2019 on the 1st November as part of the blue team (in name alone). I was part of the group in the team focusing on binary exploitation, while the other group focused on the web challenges. We managed to solve 2 binary challenges on the day, with the web group solving quite a few more. We ended up winning the competition at the end of the day, it was a great experience!" />
+<link rel="canonical" href="http://localhost:4000/2019/11/04/post.html" />
+<meta property="og:url" content="http://localhost:4000/2019/11/04/post.html" />
+<meta property="og:site_name" content="seb-sec" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2019-11-04T00:00:00+11:00" />
+<script type="application/ld+json">
+{"author":{"@type":"Person","name":"seb-sec"},"description":"I participated in the Secedu ctf event in 2019 on the 1st November as part of the blue team (in name alone). I was part of the group in the team focusing on binary exploitation, while the other group focused on the web challenges. We managed to solve 2 binary challenges on the day, with the web group solving quite a few more. We ended up winning the competition at the end of the day, it was a great experience!","dateModified":"2019-11-04T00:00:00+11:00","datePublished":"2019-11-04T00:00:00+11:00","headline":"Secedu ctf 2019","@type":"BlogPosting","mainEntityOfPage":{"@type":"WebPage","@id":"http://localhost:4000/2019/11/04/post.html"},"url":"http://localhost:4000/2019/11/04/post.html","@context":"https://schema.org"}</script>
+<!-- End Jekyll SEO tag -->
+
+  </head>
+
+  <body>
+
+    <header>
+      <div class="container">
+        <h1>seb-sec</h1>
+        <h2>Security Research</h2>
+
+        <section id="downloads">
+          
+        </section>
+
+        <section id="navigation">
+          <h3><a href="/">Home</a></h3>
+          <h3><a href="/about">About</a></h3>
+          <h3><a href="/blog">Blog</a></h3>
+          <h3><a href="/projects">Projects</a></h3>
+        </section>
+      </div>
+    </header>
+
+    <div class="container">
+      <section id="main_content">
+        <small>4 November 2019</small>
+<h1>Secedu ctf 2019</h1>
+
+<p class="view">by seb-sec</p>
+
+<p>I participated in the Secedu ctf event in 2019 on the 1st November as part of the blue team (in name alone). I was part of the group in the team focusing on binary exploitation, while the other group focused on the web challenges. We managed to solve 2 binary challenges on the day, with the web group solving quite a few more. We ended up winning the competition at the end of the day, it was a great experience!</p>
+
+<p><br />
+<!--more-->
+<br />
+<img src="/assets/images/secedu2019/win.jpg" alt="seceductf2019" /></p>
+
+<p><br />
+The ctf was hosted on a google-esque site, where the teams received challenges, submitted flags, and even communicated with other teams by email, which was really cool!</p>
+
+<p><br />
+<img src="/assets/images/secedu2019/mail.jpg" alt="seceductf2019-mail" /></p>
+
+<p><br /></p>
+
+<p>One of the challenges I worked on (called shell), represented a login system where you could login, set an access level and attempt to access a flag function. However, you were restricted from setting your access level to the required level to use the getflag feature.</p>
+
+<p><br />
+<img src="/assets/images/secedu2019/shell.jpg" alt="secedu2019-shell" /></p>
+
+<p><br />
+Looking through the disassembly, I began to get an idea of what the data structures looked like and how it was handled. This is my idea of what the user structure looked like:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="n">user</span> <span class="p">{</span>
+  <span class="kt">char</span> <span class="o">*</span><span class="n">name</span><span class="p">;</span>
+  <span class="kt">long</span> <span class="n">access_level</span><span class="p">;</span>
+<span class="p">};</span>
+
+</code></pre></div></div>
+
+<p>There’s a call to <code class="highlighter-rouge">malloc()</code> with a size argument of 0x10 given, which is enough for a pointer and an 8 byte number on 64-bit architecture- this is the user struct. The program calls <code class="highlighter-rouge">strdup()</code> on the user provided input when logging in to set the <code class="highlighter-rouge">name</code> field. The <code class="highlighter-rouge">logout()</code> function will only free this <code class="highlighter-rouge">name</code> field that was obtained by <code class="highlighter-rouge">strdup</code>.</p>
+
+<p>At no point is there an attempt made to clear our this memory block. This means that if we create a name of similar size to the user struct then logout to free the name memory block we will now have a free chunk of memory with our data in the free chunk list.</p>
+
+<p>When we login again, <code class="highlighter-rouge">malloc</code> will first look in this free list, find the correctly sized free chunk and use that for the user struct. Since there was no attempt made to clear out the data in this chunk, we can get arbitrary input in the <code class="highlighter-rouge">access_level</code>- in this case the number 9. This allows us to use the <code class="highlighter-rouge">getflag</code> command and get our flag.</p>
+
+
+
+  <small>tags: <em>binary exploitation</em> - <em>ctf</em></small>
+
+
+      </section>
+    </div>
+
+    
+  </body>
+</html>
