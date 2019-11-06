@@ -1,58 +1,4 @@
-<!DOCTYPE html>
-<html lang="en-US">
-  <head>
-    <meta charset='utf-8'>
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="/assets/css/style.css?v=">
-
-<!-- Begin Jekyll SEO tag v2.6.1 -->
-<title>Picoctf2019 | seb-sec</title>
-<meta name="generator" content="Jekyll v4.0.0" />
-<meta property="og:title" content="Picoctf2019" />
-<meta name="author" content="seb-sec" />
-<meta property="og:locale" content="en_US" />
-<meta name="description" content="Pico was a fun ctf that had a wide range of challenges, from absolute beginner to some nontrivial (for me) heap exploitation. I decided to pick out a few of these challenges from the binary exploitation category, make writeups for them and cover some basic exploitation concepts from the point of view of a beginner with only a small amount of programming experience." />
-<meta property="og:description" content="Pico was a fun ctf that had a wide range of challenges, from absolute beginner to some nontrivial (for me) heap exploitation. I decided to pick out a few of these challenges from the binary exploitation category, make writeups for them and cover some basic exploitation concepts from the point of view of a beginner with only a small amount of programming experience." />
-<link rel="canonical" href="http://localhost:4000/2019/10/29/post.html" />
-<meta property="og:url" content="http://localhost:4000/2019/10/29/post.html" />
-<meta property="og:site_name" content="seb-sec" />
-<meta property="og:type" content="article" />
-<meta property="article:published_time" content="2019-10-29T00:00:00+11:00" />
-<script type="application/ld+json">
-{"author":{"@type":"Person","name":"seb-sec"},"headline":"Picoctf2019","dateModified":"2019-10-29T00:00:00+11:00","datePublished":"2019-10-29T00:00:00+11:00","description":"Pico was a fun ctf that had a wide range of challenges, from absolute beginner to some nontrivial (for me) heap exploitation. I decided to pick out a few of these challenges from the binary exploitation category, make writeups for them and cover some basic exploitation concepts from the point of view of a beginner with only a small amount of programming experience.","mainEntityOfPage":{"@type":"WebPage","@id":"http://localhost:4000/2019/10/29/post.html"},"@type":"BlogPosting","url":"http://localhost:4000/2019/10/29/post.html","@context":"https://schema.org"}</script>
-<!-- End Jekyll SEO tag -->
-
-  </head>
-
-  <body>
-
-    <header>
-      <div class="container">
-        <h1>seb-sec</h1>
-        <h2>Security Research</h2>
-
-        <section id="downloads">
-          
-        </section>
-
-        <section id="navigation">
-          <h3><a href="/">Home</a></h3>
-          <h3><a href="/about">About</a></h3>
-          <h3><a href="/blog">Blog</a></h3>
-          <h3><a href="/projects">Projects</a></h3>
-        </section>
-      </div>
-    </header>
-
-    <div class="container">
-      <section id="main_content">
-        <small>29 October 2019</small>
-<h1>Picoctf2019</h1>
-
-<p class="view">by seb-sec</p>
-
-<p>Pico was a fun ctf that had a wide range of challenges, from absolute beginner to some nontrivial (for me) heap exploitation.</p>
+I"(–<p>Pico was a fun ctf that had a wide range of challenges, from absolute beginner to some nontrivial (for me) heap exploitation.</p>
 
 <p>I decided to pick out a few of these challenges from the binary exploitation category, make writeups for them and cover some basic exploitation concepts from the point of view of a beginner with only a small amount of programming experience.</p>
 
@@ -451,15 +397,4 @@ Writing to this is done by calling <code class="highlighter-rouge">mov dword ptr
 <span class="n">p</span><span class="o">.</span><span class="n">interactive</span><span class="p">()</span>
 </code></pre></div></div>
 
-
-
-
-  <small>tags: <em>binary exploitation</em> - <em>ctf</em></small>
-
-
-      </section>
-    </div>
-
-    
-  </body>
-</html>
+:ET
