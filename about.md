@@ -8,7 +8,7 @@ This site documents interesting points on my journey in security, as well as any
 
 <hr>
 
-Email: seb_sec@yahoo.com
+Email: seb.tar.gz@gmail.com
 
 Github: <https://github.com/seb-sec>
 

@@ -1,0 +1,67 @@
+I"�<p>Recently I came across a ctf challenge that was exploited by corrupting glibc FILE structures/operations (the bookface challenge in angstromctf2020). I hadn’t come across this type of exploitation before, so I did some more reading on the topic</p>
+
+<p>Corrupting or forging FILE structures can result in arbitrary read/write primitives and code execution, which makes it a cool topic to know about.</p>
+
+<!--more-->
+
+<h1 id="file-exploitation">FILE exploitation</h1>
+
+<p>For a more in depth look at these techniques, I recommend looking at <a href="https://www.slideshare.net/AngelBoy1/play-with-file-structure-yet-another-binary-exploit-technique">Angel Boy’s slides</a> for this topic, as well as <a href="https://dhavalkapil.com/blogs/FILE-Structure-Exploitation/">Dhaval Kapil’s article</a></p>
+
+<p>First, lets look at what a FILE struct (internally called <code class="highlighter-rouge">struct _IO_FILE</code>) looks like</p>
+
+<p><img src="/assets/images/fileexploit/file_struct.jpg" alt="file_struct" /></p>
+
+<p>There are pointers to buffers that are used for reading and writing operations, as well as the fileno that is returned by sys_open(), (these are the targets for arbitrary reads/writes, described later).</p>
+
+<p>There also exists a <code class="highlighter-rouge">struct _IO_FILE_plus</code>:</p>
+
+<p><img src="/assets/images/fileexploit/file_struct_plus.jpg" alt="file_struct_plus" /></p>
+
+<p>This includes the previous struct, as well as a virtual function table. This seems to be the struct that most files are assigned- this includes stdin/stdout/stderr</p>
+
+<p>So, what does this vtable look like?</p>
+
+<p><img src="/assets/images/fileexploit/_io_jump_t.jpg" alt="_io_jump_t" /></p>
+
+<p>When operations are performed on the file, it uses this vtable to determine what function to call.</p>
+
+<p>By default, the vtable exists in a readonly segment in libc, so modifying it is normally not possible. However, you <em>can</em> modify the vtable pointer for a file you justed opened, since the struct will exist in a rw segment. In this way, you can forge a vtable in some controlled part of memory and overwrite the vtable pointer to point to it. When file related operationss are called on the file, the functions in the forged table would be executed.</p>
+
+<p>Unfortunately, this was fixed in libc 2.24, with two functions being added to protect against vtable tampering: <code class="highlighter-rouge">IO_validate_vtable</code> and <code class="highlighter-rouge">IO_vtable_check</code></p>
+
+<ul>
+  <li>Fastpath: if the vtable pointer lies within the <code class="highlighter-rouge">__libc_IO_vtable_area</code>, the check passes</li>
+  <li>Otherwise, <code class="highlighter-rouge">_IO_vtable_check()</code> is called, which performs more thorough checks, including checking the IO_accept_foreign_vtables variable. This provides a potential way to bypass the new vtable restriction, but we would also have to bypass <a href="https://sourceware.org/glibc/wiki/PointerEncryption">pointer encryption</a> in libc. The source for <code class="highlighter-rouge">_IO_vtable_check</code> can be read <a href="https://fossies.org/linux/glibc/libio/vtables.c">here</a></li>
+</ul>
+
+<p><img src="/assets/images/fileexploit/_io_vtable_check.jpg" alt="_io_vtable_check" /></p>
+
+<p>So we can’t set a vtable pointer to outside of that vtable area, but we <em>can</em> offset the pointer slightly such that it still points inside the allowed area, but causes other functions to be called instead of the original target. Which function do we want to call? <a href="https://code.woboq.org/userspace/glibc/libio/strops.c.html#_IO_str_overflow">_IO_str_overflow</a></p>
+
+<p>The important part of the source is:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">new_buf</span>  <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="p">(</span><span class="o">*</span><span class="p">((</span><span class="n">_IO_strfile</span> <span class="o">*</span><span class="p">)</span> <span class="n">fp</span><span class="p">)</span><span class="o">-&gt;</span><span class="n">_s</span><span class="p">.</span><span class="n">_allocate_buffer</span><span class="p">)</span> <span class="p">(</span><span class="n">new_size</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p><code class="highlighter-rouge">_s._allocate_buffer</code> is a function pointer that is at some offset from a FILE struct, which takes <code class="highlighter-rouge">new_size</code> as an argument.</p>
+
+<p><code class="highlighter-rouge">new_size</code> is calculated in the same function from other fields in the FILE struct.</p>
+
+<p><img src="/assets/images/fileexploit/new_size.jpg" alt="new_size" /></p>
+
+<p>If we can corrupt the FILE struct of an open file, we can control the function pointer to get code execution as well as control that <code class="highlighter-rouge">new_size</code> variable (this will be the argument to whatever function we choose to call- <code class="highlighter-rouge">system()</code> is a good candidate)</p>
+
+<p>Another consideration we have to make when constructing our FILE struct is the <code class="highlighter-rouge">_lock</code> field. If calling <code class="highlighter-rouge">fclose()</code>, this is used to wait on closing a file if its currently in use, so if we provide the wrong value it may crash or wait forever. We need to set it to an address that points to NULL, and from testing this needs to be in a rw segment.</p>
+
+<p>As an example of this exploitation technique, we will call <code class="highlighter-rouge">fclose()</code> on a FILE struct that we control and use that to get a shell. The requirements for this exploit are:</p>
+<ul>
+  <li>A libc address leak- used to get the address of the jump table and <code class="highlighter-rouge">system</code></li>
+  <li>Ability to forge/corrupt a FILE struct</li>
+  <li>Ability to get <code class="highlighter-rouge">fclose()</code> called on our modified FILE *ptr
+    <ul>
+      <li>Although this isn’t the <em>only</em> way to get <code class="highlighter-rouge">_IO_str_overflow()</code> called</li>
+    </ul>
+  </li>
+</ul>
+:ET

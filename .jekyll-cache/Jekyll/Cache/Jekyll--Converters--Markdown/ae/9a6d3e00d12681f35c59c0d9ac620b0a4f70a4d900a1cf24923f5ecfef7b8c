@@ -1,0 +1,5 @@
+I"š<p>Recently I came across a ctf challenge that was exploited by corrupting glibc FILE structures/operations (the bookface challenge in angstromctf2020). I hadnâ€™t come across this type of exploitation before, so I did some more reading on the topic</p>
+
+<p>Corrupting or forging FILE structures can result in arbitrary read/write primitives and code execution, which makes it a cool topic to know about.</p>
+
+:ET
