@@ -1,0 +1,134 @@
+I"�3<p>This was a fun ctf, even though I spent most of my time on a single challnge (called ‘useless crap’). I learned a lot doing this challenge, and thought I would make a writeup because as far a I know (from the 2 places I’ve looked) this is a unique solution, with cool tricks.</p>
+
+<!--more-->
+
+<h1 id="tghack-2020--useless-crap-challenge">TG:HACK 2020- useless crap challenge</h1>
+
+<p>From the challenge page we get 3 files- the binary (called <code class="highlighter-rouge">crap</code>), a libc (version 2.31) and a dynamic linker/loader ld-2.31.so. By running patchelf we see theres another needed library, libseccomp.</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ patchelf --print-needed ./crap
+libseccomp.so.2
+libc.so.6
+</code></pre></div></div>
+
+<p>I already had this library in /lib64/, and put a copy in the challenge directory. I used patchelf to set all the needed libraries/linker in the binary ELF in order to run it</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ patchelf --add-needed ./libseccomp.so.2 ./crap
+$ patchelf --add-needed ./libc-2.31.so ./crap
+$ patchelf --set-interpreter ./ld-2.31.so ./crap
+</code></pre></div></div>
+
+<p>After checking the protections enabled with <code class="highlighter-rouge">checksec</code>, it looks like this is a 64bit binary with everything enabled:</p>
+
+<p><img src="/assets/images/tghack2020/checksec.jpg" alt="checksec" /></p>
+
+<p>When we run the binary, we get a simple menu with 3 options</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ ./crap
+1. read
+2. write
+3. exit
+&gt;
+</code></pre></div></div>
+
+<p>I then opened up the binary in the <a href="https://github.com/radareorg/cutter">cutter</a> disassembler to look at what the options do. At this point I found 2 more options, accessed by options ‘4’ and ‘5’. Here is a summary of what each do:</p>
+
+<ul>
+  <li>1 read: reads memory at a user supplied address. There is a limit of 2 reads allowed, enforced by checking if a global signed integer is &gt; 1</li>
+  <li>2 write: writes a user supplied value at a user supplied address. Same limit mechanism as read option</li>
+  <li>3 exit: Asks the user for some feedback- first some memory is allocated with a <code class="highlighter-rouge">calloc(0x501, 1)</code> call, and this memory is filled with <code class="highlighter-rouge">fgets</code>. Additionally, after writing their feedback the user is asked if they want to keep their feedback. If they answer ‘n’ the feedback buffer is <code class="highlighter-rouge">free()</code>‘d, but <em>not</em> set to NULL.
+  You can only provide feedback once- this is enforced by checking if the feedback buffer is NULL</li>
+  <li>4 view_feedback: calls <code class="highlighter-rouge">printf("%s")</code> on the feedback buffer</li>
+  <li>5 actual <code class="highlighter-rouge">exit()</code></li>
+</ul>
+
+<p>It’s nice that the challenge gives us arbitrary r/w for free, now we need some address leaks to work with.</p>
+
+<p>Because of its size, the allocated feedback chunk is placed into the unsorted bin when <code class="highlighter-rouge">free()</code>‘d. This means that its forward and backward pointers will point inside of <code class="highlighter-rouge">main_arena</code> (+96) in libc. These pointers are written where the user data used to be in the heap chunk, so if we send menu option ‘4’ to view the feedback after freeing it will call <code class="highlighter-rouge">printf()</code> on one of these pointers, and so we can read the address of <code class="highlighter-rouge">main_arena+96</code> and use that to obtain the base of libc.</p>
+
+<p>There’s a lot you can do with a libc leak + an arbitrary read, like leaking the address of every other segment in the process memory.</p>
+
+<p><br /></p>
+
+<h2 id="leaking-every-segment-from-libc">Leaking every segment from libc</h2>
+
+<h3 id="text">.text</h3>
+
+<p>If you look at the binary in gdb and run <code class="highlighter-rouge">vmmap</code>, you will see that the dynamic linker/loader <code class="highlighter-rouge">ld</code> program has its own segment in memory. The value the .text segment is loaded in at will be stored in this segment.</p>
+
+<p>If you want to check, find the value of the binary base in your gdb session using <code class="highlighter-rouge">vmmap</code>, then use the search functionality (<code class="highlighter-rouge">search</code> in pwndbg or <code class="highlighter-rouge">search-pattern</code> in gef) to search for this value in memory. If found, it will probably be in this ld.so section</p>
+
+<p>What does this mean? The way ASLR is currently implemented (on Linux) is the shared libraries are grouped in a single ‘block’, and only the start of this block is randomised, not the start of each individual shared library. This means the offset from the base of libc to any point in the shared library block (which includes the ld.so segment) will be constant.</p>
+
+<p>So all we have to do is calculate the offset from to the binary base value in the ld.so segment and read there- we’ve leaked the .text segment address and defeated PIE</p>
+
+<h3 id="heap">heap</h3>
+
+<p>The <code class="highlighter-rouge">main_arena</code> will have heap pointers, so you can perform a read there.</p>
+
+<p>For the ctf challenge, reading at the leak we are given (<code class="highlighter-rouge">main_arena+96</code>) will give us a heap address.</p>
+
+<h3 id="stack">stack</h3>
+
+<p>There is a pointer to the <code class="highlighter-rouge">char **envp</code> argument to <code class="highlighter-rouge">main</code> inside libc. In pwntools, the offset to this can be obtained with <code class="highlighter-rouge">libc.symbols['environ']</code>. Reading here will give us a stack leak.</p>
+
+<p><br /></p>
+
+<h2 id="libseccomp">libseccomp</h2>
+
+<p>There was another function call in the challenge I haven’t mentioned yet- in main there is a call to a function called <code class="highlighter-rouge">sandbox</code>, which calls some libseccomp functions. If you manage to call something like <code class="highlighter-rouge">system("/bin/sh")</code> with the binary you would hit a SIGSYS signal, “bad system call”</p>
+
+<p><a href="https://github.com/seccomp/libseccomp">libseccomp</a> is an API to the kernel’s Berkeley Packet Filter syscall filtering mechanism. Basically, it abstracts the filter language away into a function call based interface and can be used to do things like whitelist which syscalls to allow and which file descriptions can be read from/written to.</p>
+
+<p><a href="https://github.com/david942j/seccomp-tools">seccomp-tools</a> is a nice tool that can dump the filter rules for seccomp sandboxes. Running it on the challenge binary, we see the following:</p>
+
+<p><img src="/assets/images/tghack2020/seccomptools.jpg" alt="seccomptools" /></p>
+
+<p>The <code class="highlighter-rouge">open</code>, <code class="highlighter-rouge">close</code>, <code class="highlighter-rouge">mprotect</code>, and <code class="highlighter-rouge">exit_group</code> syscalls are allowed without conditions, while <code class="highlighter-rouge">read</code> and <code class="highlighter-rouge">write</code> have some checks on the file descriptor used- specifically, you can only read from fd 0 (stdin) and write to fd 0 and 1 (stdin and stdout)</p>
+
+<p>Trying to execute other syscalls like <code class="highlighter-rouge">execve</code> will result in a SIGSYS signal stopping the program.</p>
+
+<h2 id="solving-the-challenge">Solving the challenge</h2>
+
+<p>After leaking libc by reading the feedback chunk, we use the ‘read’ option in the menu to read inside the ld.so segment and get a .text leak, as described above.</p>
+
+<p>We can then calculate the address of the integer used for keeping track of counts and use the ‘write’ option to write over this value and set it to some negative number, effectively giving us infinite arbitrary writes. Now what?</p>
+
+<p>We <em>could</em> set the feedback buffer pointer to NULL, write over <code class="highlighter-rouge">__malloc_hook</code>/<code class="highlighter-rouge">__free_hook</code> and call the set_feedback function again, but what would we put over the hook? A one_gadget wouldn’t work since <code class="highlighter-rouge">execve</code> is disabled, so it seems like we can’t use this option right now.</p>
+
+<p>We can get <code class="highlighter-rouge">exit()</code> called, and I knew that overwriting the <code class="highlighter-rouge">_exit_funcs</code> variable in libc did… something during <code class="highlighter-rouge">exit()</code>. On a whim I went with this to see what would happen.</p>
+
+<p>First lets look at the disassembly for <code class="highlighter-rouge">exit()</code> to get an idea of what would happen</p>
+
+<p><img src="/assets/images/tghack2020/exit.jpg" alt="exit" /></p>
+
+<p>This loads <code class="highlighter-rouge">__exit_funcs</code> as one of the arguments to <code class="highlighter-rouge">__run_exit_handlers</code> (<a href="https://code.woboq.org/userspace/glibc/stdlib/exit.c.html">source</a>), which does the actual heavy lifting. <code class="highlighter-rouge">__exit_funcs</code> is treated as a list of functions to be called, and is normally populated by calling functions like <code class="highlighter-rouge">atexit()</code>, and by default contains a pointer that points to <code class="highlighter-rouge">NULL</code>. We can’t use this variable to get code execution because of (pointer guard)[https://sourceware.org/glibc/wiki/PointerEncryption], which obfuscates the function pointers used in this function.</p>
+
+<p>However, looking at the source code there is a call to <code class="highlighter-rouge">free()</code> in the function execution loop. We could get code execution using <code class="highlighter-rouge">__free_hook</code> if we reach this (full disclaimer, I didn’t think about using the hooks discussed previously during the challenge, so I thought calling free from <code class="highlighter-rouge">__run_exit_handlers</code> was the only way to do so, however this turned out to be to my benefit).</p>
+
+<p><img src="/assets/images/tghack2020/free.jpg" alt="free" /></p>
+
+<p>If we point the <code class="highlighter-rouge">__exit_funcs</code> variable to our feedback chunk in the heap (which we know the location of because of the heap leak) we might have some control over how <code class="highlighter-rouge">__run_exit_handlers</code> executes. I did this and called <code class="highlighter-rouge">exit()</code> from the menu</p>
+
+<p>Some amount of dynamic analysis later I found that if you point <code class="highlighter-rouge">__exit_funcs</code> to memory containing 8 bytes of arbitrary data followed by 8 bytes of zeroes (a full NULL ptr) you will hit the call to <code class="highlighter-rouge">free()</code>, with some particularly interesting values in the registers:</p>
+
+<p><img src="/assets/images/tghack2020/regs.jpg" alt="regs" /></p>
+
+<p>Of particular interest is <code class="highlighter-rouge">$rbp</code>- it points to the <code class="highlighter-rouge">__exit_funcs</code> variable in libc (which was set to point to our heap chunk, but at some point in <code class="highlighter-rouge">__run_exit_handlers</code> this was changed. Ultimately this doesn’t matter). At this point I thought some sort of stack pivot into libc might be possible so I searched for gadgets, and managed to find this:</p>
+
+<p><img src="/assets/images/tghack2020/gadget.jpg" alt="gadget" /></p>
+
+<p>This is the magic gadget that allowed me to solve the challenge- <code class="highlighter-rouge">$rsp</code> is set above <code class="highlighter-rouge">$rbp</code> but we pop 3 times, ending up with <code class="highlighter-rouge">$rsp</code> pointing to the value right after <code class="highlighter-rouge">__exit_funcs</code>. This is still in a rw segment and we have effectively infinite writes, so we can place a ROP chain here.</p>
+
+<p>Quick recap on how we got here:</p>
+
+<ul>
+  <li>Provide feedback such that we have 8 bytes of arbitrary data followed by 8 bytes of zeroes somewhere in the heap chunk- note this should be atleast after 0x20 bytes of arbitrary data since <code class="highlighter-rouge">free()</code> will overwrite some user data</li>
+  <li><code class="highlighter-rouge">free()</code> the chunk and read the feedback to get a libc leak</li>
+  <li>Use the libc leak + arbitrary read to leak the .text segment and the heap address</li>
+  <li>Write over the write count with some large negative number to get infinite writes</li>
+  <li>Write over <code class="highlighter-rouge">__free_hook</code> with our stack pivot gadget</li>
+  <li>Write over <code class="highlighter-rouge">__exit_funcs</code> with a pointer to our heap data</li>
+  <li>Call <code class="highlighter-rouge">exit()</code> with menu option ‘5’-&gt; <code class="highlighter-rouge">__run_exit_handlers</code> is called -&gt; <code class="highlighter-rouge">free()</code> + <code class="highlighter-rouge">__free_hook</code> is called-&gt; pivot gadget triggers and we ret whatever address is stored right after <code class="highlighter-rouge">__exit_funcs</code></li>
+</ul>
+:ET

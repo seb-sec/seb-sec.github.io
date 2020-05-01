@@ -1,0 +1,69 @@
+I"�<p>This was a fun ctf, even though I spent most of my time on a single challnge (called ‘useless crap’). I learned a lot doing this challenge, and thought I would make a writeup because as far a I know (from the 2 places I’ve looked) this is a unique solution, with cool tricks.</p>
+
+<!--more-->
+
+<h1 id="tghack-2020--useless-crap-challenge">TG:HACK 2020- useless crap challenge</h1>
+
+<p>From the challenge page we get 3 files- the binary (called <code class="highlighter-rouge">crap</code>), a libc (version 2.31) and a dynamic linker/loader ld-2.31.so. By running patchelf we see theres another needed library, libseccomp.</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ patchelf --print-needed ./crap
+libseccomp.so.2
+libc.so.6
+</code></pre></div></div>
+
+<p>I already had this library in /lib64/, and put a copy in the challenge directory. I used patchelf to set all the needed libraries/linker in the binary ELF in order to run it</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ patchelf --add-needed ./libseccomp.so.2 ./crap
+$ patchelf --add-needed ./libc-2.31.so ./crap
+$ patchelf --set-interpreter ./ld-2.31.so ./crap
+</code></pre></div></div>
+
+<p>After checking the protections enabled with <code class="highlighter-rouge">checksec</code>, it looks like this is a 64bit binary with everything enabled:</p>
+
+<p><img src="/assets/images/tghack2020/checksec.jpg" alt="checksec" /></p>
+
+<p>When we run the binary, we get a simple menu with 3 options</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ ./crap
+1. read
+2. write
+3. exit
+&gt;
+</code></pre></div></div>
+
+<p>I then opened up the binary in the <a href="https://github.com/radareorg/cutter">cutter</a> disassembler to look at what the options do. At this point I found 2 more options, accessed by options ‘4’ and ‘5’. Here is a summary of what each do:</p>
+
+<ul>
+  <li>
+    <ol>
+      <li>read: reads memory at a user supplied address. There is a limit of 2 reads allowed, enforced by checking if a global signed integer is &gt; 1</li>
+    </ol>
+  </li>
+  <li>
+    <ol>
+      <li>write: writes a user supplied value at a user supplied address. Same limit mechanism as read option</li>
+    </ol>
+  </li>
+  <li>
+    <ol>
+      <li>exit: Asks the user for some feedback- first some memory is allocated with a <code class="highlighter-rouge">calloc(0x501, 1)</code> call, and this memory is filled with <code class="highlighter-rouge">fgets</code>. Additionally, after writing their feedback the user is asked if they want to keep their feedback. If they answer ‘n’ the feedback buffer is <code class="highlighter-rouge">free()</code>‘d, but <em>not</em> set to NULL.
+  You can only provide feedback once- this is enforced by checking if the feedback buffer is NULL</li>
+    </ol>
+  </li>
+  <li>
+    <ol>
+      <li>view_feedback: calls <code class="highlighter-rouge">printf("%s")</code> on the feedback buffer</li>
+    </ol>
+  </li>
+  <li>
+    <ol>
+      <li>actual <code class="highlighter-rouge">exit()</code></li>
+    </ol>
+  </li>
+</ul>
+
+<p>It’s nice that the challenge gives us arbitrary r/w for free, now we need some address leaks to work with.</p>
+
+<p>Because of its size, the allocated feedback chunk is placed into the unsorted bin when <code class="highlighter-rouge">free()</code>‘d. This means that its forward and backward pointers will point inside of <code class="highlighter-rouge">main_arena</code> (+96) in libc. These are written where the user data used to be, so if we send menu option ‘4’ to view the feedback after freeing it we can read the address of <code class="highlighter-rouge">main_arena+96</code>, and use that to obtain the base of libc.</p>
+
+:ET

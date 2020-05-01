@@ -1,0 +1,111 @@
+I"�<p>This was a fun ctf, even though I spent most of my time on a single challnge (called ‘useless crap’). I learned a lot doing this challenge, and thought I would make a writeup because as far a I know (from the 2 places I’ve looked) this is a unique solution, with cool tricks.</p>
+
+<!--more-->
+
+<h1 id="tghack-2020--useless-crap-challenge">TG:HACK 2020- useless crap challenge</h1>
+
+<p>From the challenge page we get 3 files- the binary (called <code class="highlighter-rouge">crap</code>), a libc (version 2.31) and a dynamic linker/loader ld-2.31.so. By running patchelf we see theres another needed library, libseccomp.</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ patchelf --print-needed ./crap
+libseccomp.so.2
+libc.so.6
+</code></pre></div></div>
+
+<p>I already had this library in /lib64/, and put a copy in the challenge directory. I used patchelf to set all the needed libraries/linker in the binary ELF in order to run it</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ patchelf --add-needed ./libseccomp.so.2 ./crap
+$ patchelf --add-needed ./libc-2.31.so ./crap
+$ patchelf --set-interpreter ./ld-2.31.so ./crap
+</code></pre></div></div>
+
+<p>After checking the protections enabled with <code class="highlighter-rouge">checksec</code>, it looks like this is a 64bit binary with everything enabled:</p>
+
+<p><img src="/assets/images/tghack2020/checksec.jpg" alt="checksec" /></p>
+
+<p>When we run the binary, we get a simple menu with 3 options</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ ./crap
+1. read
+2. write
+3. exit
+&gt;
+</code></pre></div></div>
+
+<p>I then opened up the binary in the <a href="https://github.com/radareorg/cutter">cutter</a> disassembler to look at what the options do. At this point I found 2 more options, accessed by options ‘4’ and ‘5’. Here is a summary of what each do:</p>
+
+<ul>
+  <li>
+    <ol>
+      <li>read: reads memory at a user supplied address. There is a limit of 2 reads allowed, enforced by checking if a global signed integer is &gt; 1</li>
+    </ol>
+  </li>
+  <li>
+    <ol>
+      <li>write: writes a user supplied value at a user supplied address. Same limit mechanism as read option</li>
+    </ol>
+  </li>
+  <li>
+    <ol>
+      <li>exit: Asks the user for some feedback- first some memory is allocated with a <code class="highlighter-rouge">calloc(0x501, 1)</code> call, and this memory is filled with <code class="highlighter-rouge">fgets</code>. Additionally, after writing their feedback the user is asked if they want to keep their feedback. If they answer ‘n’ the feedback buffer is <code class="highlighter-rouge">free()</code>‘d, but <em>not</em> set to NULL.
+  You can only provide feedback once- this is enforced by checking if the feedback buffer is NULL</li>
+    </ol>
+  </li>
+  <li>
+    <ol>
+      <li>view_feedback: calls <code class="highlighter-rouge">printf("%s")</code> on the feedback buffer</li>
+    </ol>
+  </li>
+  <li>
+    <ol>
+      <li>actual <code class="highlighter-rouge">exit()</code></li>
+    </ol>
+  </li>
+</ul>
+
+<p>It’s nice that the challenge gives us arbitrary r/w for free, now we need some address leaks to work with.</p>
+
+<p>Because of its size, the allocated feedback chunk is placed into the unsorted bin when <code class="highlighter-rouge">free()</code>‘d. This means that its forward and backward pointers will point inside of <code class="highlighter-rouge">main_arena</code> (+96) in libc. These are written where the user data used to be, so if we send menu option ‘4’ to view the feedback after freeing it we can read the address of <code class="highlighter-rouge">main_arena+96</code>, and use that to obtain the base of libc.</p>
+
+<p>There’s a lot you can do with a libc leak + an arbitrary read, like leaking the address of every other segment in the binary</p>
+
+<p><br /></p>
+
+<h2 id="leaking-every-segment-from-libc">Leaking every segment from libc</h2>
+
+<h3 id="text">.text</h3>
+
+<p>If you look at the binary in gdb and run <code class="highlighter-rouge">vmmap</code>, you will see that the dynamic linker/loader <code class="highlighter-rouge">ld</code> program has its own segment in memory. THe value the .text segment is loaded in at will be stored in this segment.</p>
+
+<p>If you want to check, find the value of the binary base in your gdb session using <code class="highlighter-rouge">vmmap</code>, then use the search functionality (<code class="highlighter-rouge">search</code> in pwndbg or <code class="highlighter-rouge">search-pattern</code> in gef) to search for this value in memory. If found, it will probably be in this ld.so section</p>
+
+<p>What does this mean? The way ASLR is currently implemented (on Linux) is the shared libraries are grouped in a single ‘block’, and only the start of this block is randomised, not the start of each individual shared library. This means the offset from the base of libc to any point in the shared library block (which includes the ld.so segment) will be constant.</p>
+
+<p>So all we have to do is calculate the offset from to the binary base value in the ld.so segment and read there- we’ve leaked the .text segment address and defeated PIE</p>
+
+<h3 id="heap">heap</h3>
+
+<p>The <code class="highlighter-rouge">main_arena</code> will have heap pointers, so you can perform a read there.</p>
+
+<p>For the ctf challenge, reading at the leak we are given (<code class="highlighter-rouge">main_arena+96</code>) will give us a heap address.</p>
+
+<h3 id="stack">stack</h3>
+
+<p>There is a pointer to the <code class="highlighter-rouge">char **envp</code> argument to <code class="highlighter-rouge">main</code> inside libc. In pwntools, the offset to this can be obtained with <code class="highlighter-rouge">libc.symbols['environ']</code>. Reading here will give us a stack leak.</p>
+
+<p><br /></p>
+
+<h2 id="libseccomp">libseccomp</h2>
+
+<p>There was another function call in the challenge I haven’t mentioned yet- in main there is a call to a function called <code class="highlighter-rouge">sandbox</code>, which calls some libseccomp functions. If you manage to call something like <code class="highlighter-rouge">system("/bin/sh")</code> with the binary you would hit a SIGSYS signal, “bad system call”</p>
+
+<p><a href="https://github.com/seccomp/libseccomp">libseccomp</a> is an API to the kernel’s Berkeley Packet Filter syscall filtering mechanism. Basically, it abstracts the filter language away into a function call based interface and can be used to do things like whitelist which syscalls to allow and which file descriptions can be read from/written to.</p>
+
+<p><a href="https://github.com/david942j/seccomp-tools">seccomp-tools</a> is a nice tool that can dump the filter rules for seccomp sandboxes. Running it on the challenge binary, we see the following:</p>
+
+<p><img src="/assets/images/tghack2020/seccomptools.jpg" alt="seccomptools" /></p>
+
+<p>The <code class="highlighter-rouge">open</code>, <code class="highlighter-rouge">close</code>, <code class="highlighter-rouge">mprotect</code>, and <code class="highlighter-rouge">exit_group</code> syscalls are allowed without conditions, while <code class="highlighter-rouge">read</code> and <code class="highlighter-rouge">write</code> have some checks on the file descriptor used- specifically, you can only read from fd 0 (stdin) and write to fd 0 and 1 (stdin and stdout)</p>
+
+<p>Trying to execute other syscall like <code class="highlighter-rouge">execve</code> will result in a SIGSYS signal stopping the program.</p>
+
+:ET
