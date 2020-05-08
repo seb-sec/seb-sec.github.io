@@ -76,7 +76,7 @@
 
 <p>So, what does this vtable look like?</p>
 
-<p><img src="/assets/images/fileexploit/_io_jump_t.jpg" alt="_io_jump_t" /></p>
+<p><img src="/assets/images/fileexploit/io_jump_t.jpg" alt="io_jump_t" /></p>
 
 <p>When operations are performed on the file, it uses this vtable to determine what function to call.</p>
 
@@ -89,7 +89,7 @@
   <li>Otherwise, <code class="highlighter-rouge">_IO_vtable_check()</code> is called, which performs more thorough checks, including checking the IO_accept_foreign_vtables variable. This provides a potential way to bypass the new vtable restriction, but we would also have to bypass <a href="https://sourceware.org/glibc/wiki/PointerEncryption">pointer encryption</a> in libc. The source for <code class="highlighter-rouge">_IO_vtable_check</code> can be read <a href="https://fossies.org/linux/glibc/libio/vtables.c">here</a></li>
 </ul>
 
-<p><img src="/assets/images/fileexploit/_io_vtable_check.jpg" alt="_io_vtable_check" /></p>
+<p><img src="/assets/images/fileexploit/io_vtable_check.jpg" alt="io_vtable_check" /></p>
 
 <p>So we can’t set a vtable pointer to outside of that vtable area, but we <em>can</em> offset the pointer slightly such that it still points inside the allowed area, but causes other functions to be called instead of the original target. Which function do we want to call? <a href="https://code.woboq.org/userspace/glibc/libio/strops.c.html#_IO_str_overflow">_IO_str_overflow</a></p>
 
