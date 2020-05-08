@@ -55,7 +55,7 @@ For resources, try the Shellcoders Handbook mentioned above
 
 A collection of functions to allocate, write to, read from and free heap chunks.
 
-For resources, first understand the inner workings of the dynamic memory allocator you are targetting (for the program, its [malloc](https://sourceware.org/glibc/wiki/MallocInternals)). Then read up on some basic exploitation strategies (some more resources are linked in [this](https://azeria-labs.com/heap-exploitation-part-1-understanding-the-glibc-heap-implementation/) article)
+For resources, first understand the inner workings of the dynamic memory allocator you are targetting (for the program, its [glibc's malloc](https://sourceware.org/glibc/wiki/MallocInternals)). Then read up on some basic exploitation strategies (some more resources are linked in [this](https://azeria-labs.com/heap-exploitation-part-1-understanding-the-glibc-heap-implementation/) article)
 
 Change the version of libc you are linking against to explore how heap protection mechanisms have changed over time
 
