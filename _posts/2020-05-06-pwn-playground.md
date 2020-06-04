@@ -12,9 +12,9 @@ Small environment to practice exploitation techniques without many restrictions
 
 [pwn-playground github](https://github.com/seb-sec/pwn_playground)
 
-This project has several features to assist in performing different types of exploitation (targetted at C programs, but the concepts apply elsewhere too).
+This project has several features to assist in performing different types of exploitation (targeted at basic C programs, but the concepts apply elsewhere too).
 
-Also included is a set of python functions using pwntools to assist in interacting with the program so the user can focus on exploitation.
+Also included is a set of python functions using pwntools to assist in interacting with the program, so the user can focus on exploitation.
 
 Users can adjust the Makefile to change the program protections or target architecture, some basic options are provided as comments.
 
@@ -22,7 +22,7 @@ Users may also want to change what version of libc they are linking. Some sugges
 
 The main idea is to allow the user to practice exploitation techniques in a fast way under whatever self-imposed scenario they want. For example: under libc 2.30, given a single arbitrary write + a libc leak and all protections enabled, can I still pop a shell from a basic buffer overflow? (yes)
 
-These scenarios may be artificial, but they should still (hopefully) help in increasing someones understanding of program work internally and how to exploit them.
+These scenarios may be artificial, but they should still (hopefully) help in increasing someones understanding of how programs work internally and how to exploit them.
 
 <br>
 
@@ -83,6 +83,4 @@ Also included are other functions that may be useful:
 * Fork server
   * Performs a `fork()` and sends child to the main program loop while the parnts waits. If the child crashes the parent will re-fork and wait again.
   * Mainly designed for practicing [BROP](http://www.scs.stanford.edu/~sorbo/brop/bittau-brop.pdf) locally, but there could be other fun usage scenarios
-
-his will take precendence over the default libc.so.6 (see `patchelf --print-needed ./pwn-playground`), but you could replace the default entirely it if you wish with `patchelf --replace-needed libc.so.6 /path/to/libc ./pwn-playground`
 
