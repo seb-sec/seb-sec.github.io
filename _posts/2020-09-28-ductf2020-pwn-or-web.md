@@ -241,9 +241,6 @@ another number (the isolate root) stored elsewhere to create an actual
 memory reference.
 <br>
 <br>
-
-#### --[ - What this means for exploitation
-
 What this means for us is that we won't know the actual address of anything
 in the v8 heap, but we don't really _need_ to know their actual address,
 just the compressed pointer.
