@@ -45,7 +45,7 @@ own pages, others are just a small description here.
 
 #### DownUnderCTF 2020 Browser Exploitation
 
-[This is a writeup of a Chrome v8 exploitation challenge from DownUnderCTF](/posts/archive/2020-09-28-ductf2020).
+[This is a writeup of a Chrome v8 exploitation challenge from DownUnderCTF](/posts/archive/ductf2020/2020-09-28-ductf2020-pwn-or-web.html).
 
 #### Rootkit Larning Exercise
 
