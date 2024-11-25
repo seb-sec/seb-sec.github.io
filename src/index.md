@@ -37,7 +37,7 @@ own pages, others are just a small description here.
 
 #### angstromctf 2020 FILE Exploitation
 
-[A challenge from angstromctf 2020 involving glibc FILE exploitation](/posts/archive/angstrom-file/2020-04-29-file_exploitation.html).
+[A challenge from angstromctf 2020 involving glibc FILE exploitation](/posts/archive/angstrom-file2020/2020-04-29-file_exploitation.html).
 
 #### tghack 2020
 
