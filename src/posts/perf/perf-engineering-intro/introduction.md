@@ -31,9 +31,9 @@ The main language used to implement the functions used for testing is C.
 This exploration is spread out over a few pages:
 
 - The introduction and initial setup (this page)
-- [A look at measurement tools/methods](measurement.md)
-- [Optimisation techniques other than parallelisation](optimisations-singlecore.md)
-- [Looking at different parallel programming methods](optimisations-multicore.md)
+- [A look at measurement tools/methods](measurement.html)
+- [Optimisation techniques other than parallelisation](optimisation-singlecore.html)
+- [Looking at different parallel programming methods](optimisation-multicore.html)
 
 <hr>
 
