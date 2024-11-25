@@ -35,9 +35,9 @@ own pages, others are just a small description here.
 
 [Beginner binary exploitation writeup of a few challenges](/posts/archive/picoctf2019/2019-10-29-picoctf2019.html), done as part of picoCTF.
 
-#### angstromctf 2020 FILE Exploitation
+#### FILE Exploitation 2020
 
-[A challenge from angstromctf 2020 involving glibc FILE exploitation](/posts/archive/angstrom-file2020/2020-04-29-file_exploitation.html).
+[A small dive into glibc FILE exploitation](/posts/archive/angstrom-file2020/2020-04-29-file_exploitation.html).
 
 #### tghack 2020
 
