@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Seb" />
+  <meta name="dcterms.date" content="2024-11-25" />
+  <title>A Fool’s Grimoire</title>
+  <link id="theme" rel="stylesheet" href="/assets/css/dark.css" />
+  <link rel="icon" type="image/png" size="48x48" href="/assets/images/favicon-48x48.png">
+</head>
+<body>
+<table class="header">
+  <tr>
+    <td colspan="2" rowspan="2" class="width-auto">
+      <h1 class="title">A Fool’s Grimoire</h1>
+      <span class="subtitle">some computer user attempts things</span>
+    </td>
+    <th>Version</th>
+    <td class="width-min">v1.0.0</td>
+  </tr>
+  <tr>
+    <th>Updated</th>
+    <td class="width-min"><time style="white-space: pre;">2024-11-25</time></td>
+  </tr>
+  <tr>
+    <th class="width-min">Author</th>
+    <td class="width-auto"><a href="/"><cite>Seb</cite></a></td>
+    <td colspan="2" style="text-align: left;" class="width-auto"><a href="/">Home</a></td>
+  </tr>
+</table>
+<label class="theme-toggle-label"><input type="checkbox" class="theme-toggle" /> Theme</label>
+<nav id="TOC" role="doc-toc">
+<h2 id="toc-title">Contents</h2>
+<ul class="incremental">
+<li><a href="#explorations" id="toc-explorations">Explorations</a></li>
+<li><a href="#archive" id="toc-archive">Archive</a></li>
+<li><a href="#site-theme" id="toc-site-theme">Site Theme</a></li>
+</ul>
+</nav>
+<h3 id="explorations">Explorations</h3>
+<p>This section links to explorations made into various topics.</p>
+<h4 id="performance-engineering-starter-pack">Performance Engineering
+Starter Pack</h4>
+<p>This series of posts goes through a small breadth-first foray into
+software performance measurement tooling and techniques. It also
+investigates some parallelisation techniques, such as GPU
+programming.</p>
+<p>The main goal of this series was to become more familiar with various
+performance related technologies and techniques.</p>
+<p><a href="/posts/perf/perf-engineering-intro/introduction.html">Read
+here</a></p>
+<hr>
+<h3 id="archive">Archive</h3>
+<p>This section holds older posts/goings on from a few years ago. Some
+have their own pages, others are just a small description here.</p>
+<h4 id="picoctf-2019">picoCTF 2019</h4>
+<p><a
+href="/posts/archive/picoctf2019/2019-10-29-picoctf2019.html">Beginner
+binary exploitation writeup of a few challenges</a>, done as part of
+picoCTF.</p>
+<h4 id="angstromctf-2020-file-exploitation">angstromctf 2020 FILE
+Exploitation</h4>
+<p>[A challenge from angstromctf 2020 involving glibc FILE
+exploitation)(/posts/archive/angstrom-file/2020-04-29-file_exploitation.html).</p>
+<h4 id="tghack-2020">tghack 2020</h4>
+<p><a href="/posts/archive/tghack2020/2020-05-01-tghack2020.html">A CTF
+writeup from tghack 2020</a>.</p>
+<h4 id="downunderctf-2020-browser-exploitation">DownUnderCTF 2020
+Browser Exploitation</h4>
+<p><a href="/posts/archive/2020-09-28-ductf2020">This is a writeup of a
+Chrome v8 exploitation challenge from DownUnderCTF</a>.</p>
+<h4 id="rootkit-larning-exercise">Rootkit Larning Exercise</h4>
+<p><a href="https://github.com/seb-sec/trivial-rootkit">Code for a
+rootkit made as a learning exercise</a> early on in my security learning
+adventure as part of a University course.</p>
+<h4 id="black-box-fuzzer">Black Box Fuzzer</h4>
+<p><a href="https://github.com/Josh-Murray/fuzzer/tree/dev">Code for a
+black box fuzzer</a> made in a team as part of a University project. I
+worked on the harness component of this fuzzer, which managed the binary
+that was being tested (setting it up, feeding it inputs, managing
+crashes). Some additional features I worked on include a simple code
+coverage mechanism using <code>ptrace()</code> and a memory snapshot
+mechanism to improve fuzzer performance.</p>
+<h4 id="open-source-bug-finding">Open Source Bug Finding</h4>
+<p>When looking at the <a
+href="http://www.github.com/janet-lang/janet">Janet programming
+language</a>, I discovered a few memory corruption bugs in the project
+(issues <a
+href="http://www.github.com/janet-lang/janet/issues/416">#416</a>, <a
+href="http://www.com/janet-lang/janet/issues/409">#409</a>, <a
+href="http://www.github.com/janet-lang/janet/issues/407">#407</a>) by
+fuzz testing, and further dynamic analysis using <code>gdb</code> to
+pinpoint the cause of the bugs.</p>
+<hr>
+<h3 id="site-theme">Site Theme</h3>
+<p>The theme was adapted from <a
+href="https://owickstrom.github.io/the-monospace-web/">Oskar Wickström’s
+design</a>, with code at <a
+href="https://github.com/owickstrom/the-monospace-web">github.com/owickstrom/the-monospace-web</a>.</p>
+  <div class="debug-grid"></div>
+  <script src="/index.js"></script>
+</body>
+</html>

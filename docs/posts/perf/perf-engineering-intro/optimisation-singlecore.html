@@ -1,0 +1,1900 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Seb" />
+  <meta name="dcterms.date" content="2024-11-25" />
+  <title>Single Core Optimisations</title>
+  <link id="theme" rel="stylesheet" href="/assets/css/dark.css" />
+  <link rel="icon" type="image/png" size="48x48" href="/assets/images/favicon-48x48.png">
+  <script
+  src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"
+  type="text/javascript"></script>
+</head>
+<body>
+<table class="header">
+  <tr>
+    <td colspan="2" rowspan="2" class="width-auto">
+      <h1 class="title">Single Core Optimisations</h1>
+      <span class="subtitle"></span>
+    </td>
+    <th>Version</th>
+    <td class="width-min">v1.0.0</td>
+  </tr>
+  <tr>
+    <th>Updated</th>
+    <td class="width-min"><time style="white-space: pre;">2024-11-25</time></td>
+  </tr>
+  <tr>
+    <th class="width-min">Author</th>
+    <td class="width-auto"><a href="/"><cite>Seb</cite></a></td>
+    <td colspan="2" style="text-align: left;" class="width-auto"><a href="/">Home</a></td>
+  </tr>
+</table>
+<label class="theme-toggle-label"><input type="checkbox" class="theme-toggle" /> Theme</label>
+<nav id="TOC" role="doc-toc">
+<h2 id="toc-title">Contents</h2>
+<ul class="incremental">
+<li><a href="#optimisations"
+id="toc-optimisations">Optimisations</a></li>
+<li><a href="#tools" id="toc-tools">Tools</a></li>
+<li><a href="#base-case" id="toc-base-case">Base Case</a></li>
+<li><a href="#compiler-flags" id="toc-compiler-flags">Compiler
+Flags</a></li>
+<li><a href="#algorithm-modification---loop-optimisation"
+id="toc-algorithm-modification---loop-optimisation">Algorithm
+Modification - Loop Optimisation</a></li>
+<li><a href="#algorithm-modification---small-angle-approximation"
+id="toc-algorithm-modification---small-angle-approximation">Algorithm
+Modification - Small Angle Approximation</a></li>
+<li><a href="#optimising-instruction-cache-access"
+id="toc-optimising-instruction-cache-access">Optimising Instruction
+Cache Access</a></li>
+<li><a href="#algorithm-modification---taylor-expansion"
+id="toc-algorithm-modification---taylor-expansion">Algorithm
+Modification - Taylor Expansion</a></li>
+<li><a href="#simd-instructions" id="toc-simd-instructions">SIMD
+Instructions</a></li>
+<li><a href="#honorable-mention-memory-access-order"
+id="toc-honorable-mention-memory-access-order">Honorable Mention: Memory
+Access Order</a></li>
+<li><a href="#results-summary" id="toc-results-summary">Results
+Summary</a></li>
+<li><a href="#conclusions" id="toc-conclusions">Conclusions</a></li>
+</ul>
+</nav>
+<h3 id="optimisations">Optimisations</h3>
+<p>This section begins looking at various things that can be done to
+improve the performance of the sample code. Like the measurement
+section, this is more of a journey of exploration into various
+techniques, and will serve to inform a future reference page that tracks
+various techniques.</p>
+<p>Some of the techniques explored include various algorithmic
+modifications, such as rewriting hot loops, using small angle
+trigonometric approximations, and using Taylor series approximations.
+Others techniques include attempting to optimise branch prediction,
+examining the sort of optimisations made by compiler flags, and using
+vector instrinsics.</p>
+<p>The same code is used from the previous section for the most part
+(although different code examples might be explored along the way):</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> a <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> b <span class="op">=</span> M_PI<span class="op">/</span><span class="dv">4</span><span class="op">;</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> split <span class="op">=</span> <span class="dv">1000000000</span><span class="op">;</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> ans_riemann <span class="op">=</span> integral_riemann<span class="op">(</span>f_simple<span class="op">,</span> b<span class="op">,</span> a<span class="op">,</span> split<span class="op">);</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> ans_analytical <span class="op">=</span> integral_analytical<span class="op">(</span>antiderivative_f_simple<span class="op">,</span> b<span class="op">,</span> a<span class="op">);</span></span></code></pre></div>
+<p>The <code>split</code> variable is set to 1 billion by default,
+resulting in a Riemann sum taken with 1 billion rectangles. Both the
+<code>f_simple</code> and <code>f_intermediate</code> functions are
+tested.</p>
+<p>The base case was compiled with:</p>
+<pre><code>gcc main.c -o main.out -lm</code></pre>
+<p>The compiler version is gcc version 14.2.1 20240912 (Red Hat
+14.2.1-3).</p>
+<p>The CPU used is a AMD Ryzen 7 7840U.</p>
+<h3 id="tools">Tools</h3>
+<p>The main tools that will be used to measure performance are
+<code>perf</code> and <code>bptrace</code>.</p>
+<p><code>perf record</code> will be used to get an idea of where the
+code spends the most time (and how this value changes across tests).</p>
+<pre><code>$ perf record -F 50000 ./main.out
+$ perf report --percent-limit 1</code></pre>
+<p><code>perf stat</code> will be used to examine various performance
+related statistics, including instructions executed, cycles taken, and
+some branch/cache statistics.</p>
+<pre><code>$ perf stat -d -r 5 ./main.out</code></pre>
+<p><code>bpftrace</code> will be used to measure the runtime of the main
+function of interest, <code>integral_riemann</code> using the following
+script:</p>
+<pre><code>uprobe:./main.out:integral_riemann {
+    @start[tid] = nsecs;
+}
+
+uretprobe:./main.out:integral_riemann
+/@start[tid]/
+{
+    // Microsecond time difference
+    printf(&quot;Microseconds in Riemann integral: %lld\n&quot;, (nsecs - @start[tid]) / 1e3);
+    delete(@start[tid]);
+}
+
+END {
+    clear(@start);
+}</code></pre>
+<pre><code>$ sudo bpftrace trace.bt -c main.out</code></pre>
+<p>Note that for convenience during testing two different ‘main’
+programs were compiled for the simple and intermediate cases, so the
+output may contain references to filenames in the form
+<code>simple-main.out</code> and <code>intermediate-main.out</code>.</p>
+<hr>
+<h3 id="base-case">Base Case</h3>
+<p>This is the base case with no modifications made. All other results
+will be be compared to this case to calculate their performance
+improvements.</p>
+<h4 id="measurement---simple">Measurement - Simple</h4>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./simple-main.out&#39; (5 runs):
+
+          6,790.06 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.32% )
+                19      context-switches                 #    2.798 /sec                        ( +- 21.87% )
+                 0      cpu-migrations                   #    0.000 /sec                 
+                74      page-faults                      #   10.898 /sec                        ( +-  0.33% )
+    32,860,040,463      cycles                           #    4.839 GHz                         ( +-  0.05% )  (71.42%)
+        65,087,926      stalled-cycles-frontend          #    0.20% frontend cycles idle        ( +-  0.66% )  (71.42%)
+    94,076,906,095      instructions                     #    2.86  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.02% )  (71.42%)
+    11,016,541,268      branches                         #    1.622 G/sec                       ( +-  0.02% )  (71.42%)
+         1,787,269      branch-misses                    #    0.02% of all branches             ( +-  0.30% )  (71.43%)
+    31,023,595,059      L1-dcache-loads                  #    4.569 G/sec                       ( +-  0.01% )  (71.44%)
+           698,810      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  2.32% )  (71.43%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+            6.7914 +- 0.0214 seconds time elapsed  ( +-  0.32% )</code></pre>
+<p><code>perf record</code>:</p>
+<pre><code>Samples: 364K of event &#39;cycles:P&#39;, Event count (approx.): 33305610924
+Overhead  Command   Shared Object           Symbol
+  79.44%  simple-main.out  libm.so.6        [.] __cos_fma
+  11.65%  simple-main.out  simple-main.out  [.] integral_riemann
+   7.66%  simple-main.out  simple-main.out  [.] f_simple
+   1.01%  simple-main.out  simple-main.out  [.] cos@plt</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 6847828</code></pre>
+<h4 id="measurement---intermediate">Measurement - Intermediate</h4>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;../intermediate-main.out&#39; (5 runs):
+
+         14,740.38 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.10% )
+               157      context-switches                 #   10.651 /sec                        ( +- 74.36% )
+                 1      cpu-migrations                   #    0.068 /sec                        ( +- 58.31% )
+                69      page-faults                      #    4.681 /sec                        ( +-  0.46% )
+    70,807,868,902      cycles                           #    4.804 GHz                         ( +-  0.10% )  (71.43%)
+       144,735,511      stalled-cycles-frontend          #    0.20% frontend cycles idle        ( +-  1.62% )  (71.43%)
+   235,111,065,770      instructions                     #    3.32  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.01% )  (71.43%)
+    24,031,121,304      branches                         #    1.630 G/sec                       ( +-  0.01% )  (71.43%)
+         3,867,468      branch-misses                    #    0.02% of all branches             ( +-  0.65% )  (71.43%)
+    65,087,953,018      L1-dcache-loads                  #    4.416 G/sec                       ( +-  0.02% )  (71.43%)
+         1,848,541      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  7.65% )  (71.43%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+           14.7420 +- 0.0146 seconds time elapsed  ( +-  0.10% )</code></pre>
+<p><code>perf record</code>:</p>
+<pre><code>Samples: 769K of event &#39;cycles:Pu&#39;, Event count (approx.): 71618312319
+Overhead  Command          Shared Object          Symbol
+  60.73%  intermediate-ma  libm.so.6              [.] __ieee754_pow_fma
+  24.35%  intermediate-ma  libm.so.6              [.] __cos_fma
+  10.91%  intermediate-ma  libm.so.6              [.] pow@@GLIBC_2.29
+   2.67%  intermediate-ma  intermediate-main.out  [.] f_intermediate
+   1.27%  intermediate-ma  intermediate-main.out  [.] integral_riemann</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 14846748</code></pre>
+<hr>
+<h3 id="compiler-flags">Compiler Flags</h3>
+<p>The first thing to try is getting the compiler to do some
+optimisations for us by compiling with <code>-03</code>.</p>
+<p>The instructions of the functions of interest were compared using
+<code>objdump</code>. Some of the changes seen include:</p>
+<ul class="incremental">
+<li>The <code>rbp</code> register was not used as the base pointer</li>
+<li>The original code tended to use local stack variables (referenced
+via offsetting from the base pointer <code>rbp</code>) more often, and
+tended to use a smaller set of registers. For example, in the
+disassembly for the <code>integral_riemann</code> function without
+additional optimisations, an instruction snippet looks like:</li>
+</ul>
+<pre><code>  40127b:   48 89 7d d8             mov    QWORD PTR [rbp-0x28],rdi
+  40127f:   f2 0f 11 45 d0          movsd  QWORD PTR [rbp-0x30],xmm0
+  401284:   f2 0f 11 4d c8          movsd  QWORD PTR [rbp-0x38],xmm1
+  401289:   f2 0f 11 55 c0          movsd  QWORD PTR [rbp-0x40],xmm2
+  40128e:   66 0f ef c0             pxor   xmm0,xmm0
+  401292:   f2 0f 11 45 f8          movsd  QWORD PTR [rbp-0x8],xmm0
+  401297:   f2 0f 10 45 d0          movsd  xmm0,QWORD PTR [rbp-0x30]
+  40129c:   f2 0f 5c 45 c8          subsd  xmm0,QWORD PTR [rbp-0x38]
+  4012a1:   f2 0f 5e 45 c0          divsd  xmm0,QWORD PTR [rbp-0x40]
+  4012a6:   f2 0f 11 45 e8          movsd  QWORD PTR [rbp-0x18],xmm0
+  4012ab:   f2 0f 10 45 c8          movsd  xmm0,QWORD PTR [rbp-0x38]
+  4012b0:   f2 0f 11 45 f0          movsd  QWORD PTR [rbp-0x10],xmm0
+</code></pre>
+<ul class="incremental">
+<li>In the optimised code, fewer references using memory offsets were
+seen, instead the compiler preferred to use a larger set of registers.
+In the same function, an instruction snipper looks like:</li>
+</ul>
+<pre><code>  401290:   f2 0f 5e c2             divsd  xmm0,xmm2
+  401294:   66 0f ef d2             pxor   xmm2,xmm2
+  401298:   48 83 ec 28             sub    rsp,0x28
+  40129c:   66 0f 2f e9             comisd xmm5,xmm1
+  4012a0:   f2 0f 11 44 24 18       movsd  QWORD PTR [rsp+0x18],xmm0
+  4012a6:   76 43                   jbe    4012eb &lt;integral_riemann+0x6b&gt;
+  4012a8:   48 89 fb                mov    rbx,rdi
+  4012ab:   0f 1f 44 00 00          nop    DWORD PTR [rax+rax*1+0x0]
+  4012b0:   f2 0f 11 54 24 10       movsd  QWORD PTR [rsp+0x10],xmm2
+  4012b6:   66 0f 28 c1             movapd xmm0,xmm1
+  4012ba:   f2 0f 11 4c 24 08       movsd  QWORD PTR [rsp+0x8],xmm1
+  4012c0:   ff d3                   call   rbx
+  4012c2:   f2 0f 10 5c 24 18       movsd  xmm3,QWORD PTR [rsp+0x18]
+  4012c8:   f2 0f 10 4c 24 08       movsd  xmm1,QWORD PTR [rsp+0x8]
+  4012ce:   66 49 0f 6e e6          movq   xmm4,r14
+  4012d3:   f2 0f 10 54 24 10       movsd  xmm2,QWORD PTR [rsp+0x10]
+  4012d9:   f2 0f 58 cb             addsd  xmm1,xmm3
+  4012dd:   f2 0f 59 c3             mulsd  xmm0,xmm3
+  4012e1:   66 0f 2f e1             comisd xmm4,xmm1
+  4012e5:   f2 0f 58 d0             addsd  xmm2,xmm0</code></pre>
+<ul class="incremental">
+<li>Also seen above, the compiler added multi-byte <code>nop</code>
+instructions, probably for memory alignment purposes</li>
+<li>Where possible it has eliminated unnecessary instructions. Comparing
+the unoptimised <code>f_simple</code> disassembly with the optimised one
+highlights this (also note the 11 bytes added in the form of a nop and
+some <code>0x00</code> bytes to ensure 16-byte alignment):</li>
+</ul>
+<pre><code># Base case
+0000000000401146 &lt;f_simple&gt;:
+  401146:   55                      push   rbp
+  401147:   48 89 e5                mov    rbp,rsp
+  40114a:   48 83 ec 10             sub    rsp,0x10
+  40114e:   f2 0f 11 45 f8          movsd  QWORD PTR [rbp-0x8],xmm0
+  401153:   48 8b 45 f8             mov    rax,QWORD PTR [rbp-0x8]
+  401157:   66 48 0f 6e c0          movq   xmm0,rax
+  40115c:   e8 df fe ff ff          call   401040 &lt;cos@plt&gt;
+  401161:   c9                      leave
+  401162:   c3                      ret</code></pre>
+<pre><code># -O3 case
+0000000000401190 &lt;f_simple&gt;:
+  401190:   e9 bb fe ff ff          jmp    401050 &lt;cos@plt&gt;
+  401195:   66 66 2e 0f 1f 84 00    data16 cs nop WORD PTR [rax+rax*1+0x0]
+  40119c:   00 00 00 00</code></pre>
+<ul class="incremental">
+<li>The <code>main</code> function doesn’t even call the
+<code>integral_riemann</code>/<code>integral_analytical</code>
+functions- these have been inlined. Unfortunately this causes the
+measurement tools to not work properly, so the
+<code>__attribute__ ((noinline))</code> attribute was added to those
+functions. This hopefully shouldn’t affect the final output too
+much</li>
+</ul>
+<p>Other compiler flags such as <code>-ffast-math</code> can also be
+used. In this case, the calls to <code>pow()</code> are replaced with
+calls to <code>exp()</code> (which really is the function that should
+have been used in the first place, however it was left out to explore
+potential optimisations). This caused some surprisingly large changes in
+execution speed (in the intermediate case only).</p>
+<p>The <code>gcc</code> manual specifies that the
+<code>-ffast-math</code> flag can result in incorrect output for
+programs that depend on an exact implementation of the IEEE
+specification. This may make it unsuitable for some applications, but in
+others this may be tolerable (in the tested code this did not make a
+difference in the accuracy of the output).</p>
+<p><br></p>
+<h4 id="gcc--o3">gcc -O3</h4>
+<p>Code compiled with just the <code>-O3</code> flag.</p>
+<h5 id="measurement---simple-1">Measurement - Simple</h5>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./simple-main-O3.out&#39; (5 runs):
+
+          6,425.94 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.55% )
+                17      context-switches                 #    2.646 /sec                        ( +- 10.94% )
+                 0      cpu-migrations                   #    0.000 /sec                 
+                75      page-faults                      #   11.671 /sec                        ( +-  0.78% )
+    31,560,271,362      cycles                           #    4.911 GHz                         ( +-  0.01% )  (71.42%)
+        65,815,320      stalled-cycles-frontend          #    0.21% frontend cycles idle        ( +-  1.30% )  (71.42%)
+    83,095,613,744      instructions                     #    2.63  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.01% )  (71.43%)
+    10,019,031,111      branches                         #    1.559 G/sec                       ( +-  0.02% )  (71.43%)
+         1,676,332      branch-misses                    #    0.02% of all branches             ( +-  0.57% )  (71.45%)
+    25,022,073,585      L1-dcache-loads                  #    3.894 G/sec                       ( +-  0.01% )  (71.43%)
+           610,135      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  8.25% )  (71.41%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+            6.4273 +- 0.0355 seconds time elapsed  ( +-  0.55% )</code></pre>
+<p><code>perf record</code>:</p>
+<pre><code>Samples: 350K of event &#39;cycles:P&#39;, Event count (approx.): 31907563444
+Overhead  Command          Shared Object            Symbol
+  89.13%  simple-main-O3.  libm.so.6                [.] __cos_fma
+   8.99%  simple-main-O3.  simple-main-O3.out       [.] integral_riemann
+   1.07%  simple-main-O3.  simple-main-O3.out       [.] cos@plt</code></pre>
+<p><code>bpftrace</code> (averaged over a few runs)</p>
+<pre><code>Microseconds in Riemann integral: 6454392</code></pre>
+<h5 id="measurement---intermediate-1">Measurement - Intermediate</h5>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./intermediate-main-O3.out&#39; (5 runs):
+
+         13,748.10 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.42% )
+                35      context-switches                 #    2.546 /sec                        ( +-  6.54% )
+                 1      cpu-migrations                   #    0.073 /sec                        ( +- 44.72% )
+                75      page-faults                      #    5.455 /sec                        ( +-  0.78% )
+    66,232,794,035      cycles                           #    4.818 GHz                         ( +-  0.02% )  (71.42%)
+       140,936,105      stalled-cycles-frontend          #    0.21% frontend cycles idle        ( +-  0.86% )  (71.42%)
+   228,149,636,174      instructions                     #    3.44  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.02% )  (71.42%)
+    24,032,736,261      branches                         #    1.748 G/sec                       ( +-  0.02% )  (71.42%)
+         3,584,963      branch-misses                    #    0.01% of all branches             ( +-  0.65% )  (71.43%)
+    61,050,291,939      L1-dcache-loads                  #    4.441 G/sec                       ( +-  0.01% )  (71.44%)
+         1,270,363      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  2.59% )  (71.43%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+           13.7493 +- 0.0578 seconds time elapsed  ( +-  0.42% )</code></pre>
+<p><code>perf report</code></p>
+<pre><code>Samples: 737K of event &#39;cycles:P&#39;, Event count (approx.): 66984803585
+Overhead  Command          Shared Object             Symbol
+  33.81%  intermediate-ma  libm.so.6                 [.] __ieee754_pow_fma
+  19.89%  intermediate-ma  libm.so.6                 [.] __cos_fma
+  17.10%  intermediate-ma  libm.so.6                 [.] pow@@GLIBC_2.29
+  15.10%  intermediate-ma  libm.so.6                 [.] __pow_finite@GLIBC_2.15@plt
+   7.26%  intermediate-ma  intermediate-main-O3.out  [.] integral_riemann
+   5.52%  intermediate-ma  intermediate-main-O3.out  [.] f_intermediate</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 13707645</code></pre>
+<p><br></p>
+<h4 id="gcc--o3--ffast-math">gcc -O3 -ffast-math</h4>
+<p>Code compiled with <code>-O3 -ffast-math</code> which causes the
+replacement of the <code>pow()</code> calls with <code>exp()</code>.
+This was only tested for the intermediate case.</p>
+<h5 id="measurement---intermediate-2">Measurement - Intermediate</h5>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./intermediate-main-O3-ffast-math.out&#39; (5 runs):
+
+          8,566.30 msec task-clock                       #    0.999 CPUs utilized               ( +-  0.46% )
+                14      context-switches                 #    1.634 /sec                        ( +- 14.03% )
+                 0      cpu-migrations                   #    0.000 /sec                 
+                76      page-faults                      #    8.872 /sec                        ( +-  1.05% )
+    40,742,157,788      cycles                           #    4.756 GHz                         ( +-  0.12% )  (71.43%)
+        90,315,006      stalled-cycles-frontend          #    0.22% frontend cycles idle        ( +-  1.83% )  (71.42%)
+   151,045,821,625      instructions                     #    3.71  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.01% )  (71.43%)
+    22,017,903,025      branches                         #    2.570 G/sec                       ( +-  0.00% )  (71.43%)
+         2,207,376      branch-misses                    #    0.01% of all branches             ( +-  0.54% )  (71.42%)
+    46,045,859,935      L1-dcache-loads                 #    5.375 G/sec                       ( +-  0.00% )  (71.43%)
+           868,287      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  5.17% )  (71.43%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+            8.5754 +- 0.0354 seconds time elapsed  ( +-  0.41% )</code></pre>
+<p>The number of executed instructions went from
+<code>228,149,636,174</code> (simple <code>-O3</code> case) -&gt;
+<code>151,045,821,625</code></p>
+<p><code>perf report</code></p>
+<pre><code>Samples: 467K of event &#39;cycles:P&#39;, Event count (approx.): 41330202364
+Overhead  Command          Shared Object                        Symbol
+  54.02%  intermediate-ma  libm.so.6                            [.] __cos_fma
+  15.87%  intermediate-ma  libm.so.6                            [.] __ieee754_exp_fma
+  11.83%  intermediate-ma  libm.so.6                            [.] exp@@GLIBC_2.29
+   8.57%  intermediate-ma  intermediate-main-O3-ffast-math.out  [.] f_intermediate
+   6.56%  intermediate-ma  intermediate-main-O3-ffast-math.out  [.] integral_riemann
+   1.20%  intermediate-ma  libm.so.6                            [.] __exp_finite@GLIBC_2.</code></pre>
+<p>Note how the overhead of the <code>exp()</code> function is much
+lower than what was seen for the <code>pow()</code> function in previous
+examples.</p>
+<p><code>bpftrace</code></p>
+<pre><code>Microseconds in Riemann integral: 8466576</code></pre>
+<hr>
+<h3 id="algorithm-modification---loop-optimisation">Algorithm
+Modification - Loop Optimisation</h3>
+<p>The <code>integral_riemann</code> code has some inefficiencies- for
+example, there’s an unecessary multiplication in the body of the hottest
+loop in the code:</p>
+<div class="sourceCode" id="cb26"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">double</span> n <span class="op">=</span> lower_bound<span class="op">;</span> n <span class="op">&lt;</span> upper_bound<span class="op">;</span> n <span class="op">+=</span> step<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>        sum <span class="op">+=</span> <span class="op">((</span>integrand<span class="op">(</span>n<span class="op">))</span> <span class="op">*</span> step<span class="op">);</span></span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> sum<span class="op">;</span></span></code></pre></div>
+<p>This could be brought outside the loop body without impacting the
+result, since all intermediate results are multiplied by this step
+value.</p>
+<pre><code>    for (double n = lower_bound; n &lt; upper_bound; n += step) {
+        sum += (integrand(n));
+    }
+
+    return (sum * step);</code></pre>
+<p>This is an example (albeit an exceedingly simple one) of how
+modification of algorithms can bring performance improvements.</p>
+<h4 id="measurement---simple-2">Measurement - Simple</h4>
+<p><code>perf stat</code></p>
+<pre><code> Performance counter stats for &#39;./simple-main-rewritten.out&#39; (5 runs):
+
+          6,724.41 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.53% )
+                11      context-switches                 #    1.636 /sec                        ( +- 17.01% )
+                 0      cpu-migrations                   #    0.000 /sec                 
+                76      page-faults                      #   11.302 /sec                        ( +-  0.97% )
+    32,688,385,725      cycles                           #    4.861 GHz                         ( +-  0.01% )  (71.43%)
+        65,538,629      stalled-cycles-frontend          #    0.20% frontend cycles idle        ( +-  1.32% )  (71.43%)
+    91,097,777,304      instructions                     #    2.79  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.02% )  (71.43%)
+    11,018,269,724      branches                         #    1.639 G/sec                       ( +-  0.02% )  (71.43%)
+         1,770,930      branch-misses                    #    0.02% of all branches             ( +-  0.52% )  (71.43%)
+    30,021,332,185      L1-dcache-loads                  #    4.465 G/sec                       ( +-  0.01% )  (71.43%)
+           766,880      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  8.55% )  (71.43%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+            6.7260 +- 0.0358 seconds time elapsed  ( +-  0.53% )</code></pre>
+<p>From the base case, the number of instructions executed was reduced
+from <code>94,083,232,371</code> -&gt; <code>91,097,777,304</code></p>
+<p><code>perf record</code></p>
+<pre><code>Samples: 362K of event &#39;cycles:P&#39;, Event count (approx.): 33148350337
+Overhead  Command          Shared Object                                   Symbol
+  82.38%  simple-main-rew  libm.so.6                                       [.] __cos_fma
+   9.20%  simple-main-rew  simple-main-rewritten.out                       [.] integral_r
+   7.20%  simple-main-rew  simple-main-rewritten.out                       [.] f_simple</code></pre>
+<p><code>bpftrace</code></p>
+<pre><code>Microseconds in Riemann integral: 6764517</code></pre>
+<h4 id="measurement---intermediate-3">Measurement - Intermediate</h4>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./intermediate-main-rewritten.out&#39; (5 runs):
+
+         14,471.91 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.16% )
+                39      context-switches                 #    2.695 /sec                        ( +-  7.93% )
+                 0      cpu-migrations                   #    0.000 /sec                 
+                75      page-faults                      #    5.182 /sec                        ( +-  0.78% )
+    69,618,957,577      cycles                           #    4.811 GHz                         ( +-  0.06% )  (71.43%)
+       141,500,856      stalled-cycles-frontend          #    0.20% frontend cycles idle        ( +-  1.99% )  (71.43%)
+   232,125,443,276      instructions                     #    3.33  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.01% )  (71.43%)
+    24,030,382,686      branches                         #    1.660 G/sec                       ( +-  0.01% )  (71.43%)
+         3,811,791      branch-misses                    #    0.02% of all branches             ( +-  0.92% )  (71.43%)
+    64,067,695,209      L1-dcache-loads                  #    4.427 G/sec                       ( +-  0.01% )  (71.43%)
+         1,671,895      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  4.68% )  (71.42%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+           14.4737 +- 0.0228 seconds time elapsed  ( +-  0.16% )</code></pre>
+<p>The number of instructions compared to the base case went from
+<code>235,111,065,770</code> -&gt; <code>232,125,443,276</code></p>
+<p><code>perf record</code>:</p>
+<pre><code>Samples: 775K of event &#39;cycles:P&#39;, Event count (approx.): 70555131038
+Overhead  Command          Shared Object                    Symbol
+  36.03%  intermediate-ma  libm.so.6                        [.] pow@@GLIBC_2.29
+  26.39%  intermediate-ma  libm.so.6                        [.] __ieee754_pow_fma
+  19.33%  intermediate-ma  libm.so.6                        [.] __cos_fma
+   8.18%  intermediate-ma  intermediate-main-rewritten.out  [.] integral_riemann
+   8.15%  intermediate-ma  intermediate-main-rewritten.out  [.] f_intermediate</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 14650106</code></pre>
+<hr>
+<h3 id="algorithm-modification---small-angle-approximation">Algorithm
+Modification - Small Angle Approximation</h3>
+<p>The performance analysis tools seen have identified that the
+<code>cos()</code> functions is one of the main hot-points in the code,
+therefore efforts to speed up code associated with this function call
+should improve performance.</p>
+<p>One such speed up is to add small angle approximations. This is a
+concept related to the trigonometric functions <code>sin</code>,
+<code>cos</code> and <code>tan</code> The cosine approximation is as
+follows for small values of theta:</p>
+<p><span class="math display">\[ \cos {\theta} \approx 1 - (\theta ^
+2/2) \]</span></p>
+<p>For very small values of theta, this simplifies further:</p>
+<p><span class="math display">\[ \cos {\theta} \approx 1 \]</span></p>
+<p>To quantify what ‘small’ and ‘very small’ means, this approximation
+was explored in a Python script:</p>
+<div class="sourceCode" id="cb34"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> math</span>
+<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb34-3"><a href="#cb34-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> cosine_approx(theta):</span>
+<span id="cb34-4"><a href="#cb34-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span>(<span class="dv">1</span> <span class="op">-</span> (theta<span class="op">**</span><span class="dv">2</span>)<span class="op">/</span><span class="dv">2</span>)</span></code></pre></div>
+<p>Several values of theta were tested:</p>
+<table>
+<thead>
+<tr class="header">
+<th><code>theta</code></th>
+<th><code>cos(theta)</code></th>
+<th><code>1 - (theta^2 / 2)</code></th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>0.001</td>
+<td>0.9999995</td>
+<td>0.9999995</td>
+</tr>
+<tr class="even">
+<td>0.01</td>
+<td>0.999950</td>
+<td>0.99995</td>
+</tr>
+<tr class="odd">
+<td>0.05</td>
+<td>0.998750</td>
+<td>0.99875</td>
+</tr>
+<tr class="even">
+<td>0.1</td>
+<td>0.995004</td>
+<td>0.995</td>
+</tr>
+<tr class="odd">
+<td>0.2</td>
+<td>0.980067</td>
+<td>0.98</td>
+</tr>
+<tr class="even">
+<td>0.4</td>
+<td>0.921061</td>
+<td>0.919999…</td>
+</tr>
+<tr class="odd">
+<td>0.5</td>
+<td>0.877583</td>
+<td>0.875</td>
+</tr>
+</tbody>
+</table>
+<p>From the table, the values of <code>0.05</code> and <code>0.4</code>
+for the ‘very small’ and ‘small’ cases seemed good enough.</p>
+<p>A new function was written (and set to be inlined to try remove the
+impact of additional function calls on this particular test), and the
+<code>f_simple</code> and <code>f_intermediate</code> functions were
+rewritten appropriately:</p>
+<div class="sourceCode" id="cb35"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> __attribute__ <span class="op">((</span>always_inline<span class="op">))</span> <span class="kw">inline</span> cosine_approx<span class="op">(</span><span class="dt">double</span> x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb35-2"><a href="#cb35-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> res<span class="op">;</span></span>
+<span id="cb35-3"><a href="#cb35-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Cosine small angle approximation</span></span>
+<span id="cb35-4"><a href="#cb35-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>x <span class="op">&gt;=</span> <span class="op">-</span><span class="dv">0</span><span class="er">.05</span> <span class="op">&amp;&amp;</span> x <span class="op">&lt;=</span> <span class="dv">0</span><span class="er">.05</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb35-5"><a href="#cb35-5" aria-hidden="true" tabindex="-1"></a>        res <span class="op">=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb35-6"><a href="#cb35-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">else</span> <span class="cf">if</span> <span class="op">(</span>x <span class="op">&gt;=</span> <span class="op">-</span><span class="dv">0</span><span class="er">.4</span> <span class="op">&amp;&amp;</span> x <span class="op">&lt;=</span> <span class="dv">0</span><span class="er">.4</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb35-7"><a href="#cb35-7" aria-hidden="true" tabindex="-1"></a>        res <span class="op">=</span> <span class="op">(</span><span class="dv">1</span> <span class="op">-</span> <span class="op">(</span>x <span class="op">*</span> x<span class="op">)/</span><span class="dv">2</span><span class="op">);</span></span>
+<span id="cb35-8"><a href="#cb35-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">else</span> <span class="op">{</span></span>
+<span id="cb35-9"><a href="#cb35-9" aria-hidden="true" tabindex="-1"></a>        res <span class="op">=</span> cos<span class="op">(</span>x<span class="op">);</span></span>
+<span id="cb35-10"><a href="#cb35-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb35-11"><a href="#cb35-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> res<span class="op">;</span></span>
+<span id="cb35-12"><a href="#cb35-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb35-13"><a href="#cb35-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb35-14"><a href="#cb35-14" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> f_simple<span class="op">(</span><span class="dt">double</span> x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb35-15"><a href="#cb35-15" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> cosine_approx<span class="op">(</span>x<span class="op">);</span></span>
+<span id="cb35-16"><a href="#cb35-16" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb35-17"><a href="#cb35-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb35-18"><a href="#cb35-18" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> f_intermediate<span class="op">(</span><span class="dt">double</span> x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb35-19"><a href="#cb35-19" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> cos_res <span class="op">=</span> cosine_approx<span class="op">(</span>x<span class="op">);</span></span>
+<span id="cb35-20"><a href="#cb35-20" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="op">(</span>x <span class="op">*</span> pow<span class="op">(</span>M_E<span class="op">,</span> x<span class="op">)</span> <span class="op">*</span> cos_res<span class="op">);</span></span>
+<span id="cb35-21"><a href="#cb35-21" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>It should be noted that this optimisation would make less of a
+difference if the bounds of integration was increased, i.e if fewer of
+the inputs met the small angle condition.</p>
+<h4 id="measurement---simple-3">Measurement - Simple</h4>
+<p>Note that the obtained results started deviating from the analytical
+solution:</p>
+<pre><code>Riemann:    0.707043
+Analytical: 0.707107</code></pre>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./simple-main-cos-smallangle.out&#39; (5 runs):
+
+          5,300.08 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.12% )
+                17      context-switches                 #    3.207 /sec                        ( +- 11.25% )
+                 0      cpu-migrations                   #    0.000 /sec                 
+                76      page-faults                      #   14.339 /sec                        ( +-  0.89% )
+    25,570,332,677      cycles                           #    4.825 GHz                         ( +-  0.05% )  (71.42%)
+        51,046,515      stalled-cycles-frontend          #    0.20% frontend cycles idle        ( +-  1.04% )  (71.42%)
+    77,191,972,384      instructions                     #    3.02  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.02% )  (71.42%)
+    11,319,650,092      branches                         #    2.136 G/sec                       ( +-  0.02% )  (71.42%)
+         1,391,643      branch-misses                    #    0.01% of all branches             ( +-  0.38% )  (71.44%)
+    26,640,218,261      L1-dcache-loads                  #    5.026 G/sec                       ( +-  0.01% )  (71.45%)
+           597,515      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  7.77% )  (71.43%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+           5.30146 +- 0.00624 seconds time elapsed  ( +-  0.12% )</code></pre>
+<p><code>perf record</code>:</p>
+<pre><code>Samples: 283K of event &#39;cycles:P&#39;, Event count (approx.): 25921551458
+Overhead  Command          Shared Object                   Symbol
+  56.28%  simple-main-cos  simple-main-cos-smallangle.out  [.] f_simple
+  24.97%  simple-main-cos  libm.so.6                       [.] __cos_fma
+  17.88%  simple-main-cos  simple-main-cos-smallangle.out  [.] integral_riemann</code></pre>
+<p>The overhead has shifted considerably to <code>f_simple()</code> away
+from <code>cos()</code></p>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 5343617</code></pre>
+<h4 id="measurement---intermediate-4">Measurement - Intermediate</h4>
+<p>Again, the numerical output deviated from the expected due to errors
+in the approximation:</p>
+<pre><code>Riemann:    0.44258
+Analytical: 0.442619</code></pre>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./intermediate-main-cos-smallangle.out&#39; (5 runs):
+
+         14,281.77 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.34% )
+                44      context-switches                 #    3.081 /sec                        ( +- 11.26% )
+                 0      cpu-migrations                   #    0.000 /sec                 
+                75      page-faults                      #    5.251 /sec                        ( +-  0.68% )
+    68,270,069,802      cycles                           #    4.780 GHz                         ( +-  0.01% )  (71.42%)
+       135,674,491      stalled-cycles-frontend          #    0.20% frontend cycles idle        ( +-  0.53% )  (71.42%)
+   218,235,603,025      instructions                     #    3.20  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.01% )  (71.43%)
+    24,336,817,280      branches                         #    1.704 G/sec                       ( +-  0.00% )  (71.43%)
+         3,701,441      branch-misses                    #    0.02% of all branches             ( +-  0.36% )  (71.44%)
+    60,689,239,494      L1-dcache-loads                  #    4.249 G/sec                       ( +-  0.01% )  (71.43%)
+         1,503,893      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  2.36% )  (71.43%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+           14.2856 +- 0.0479 seconds time elapsed  ( +-  0.34% )</code></pre>
+<p><code>perf record</code>:</p>
+<pre><code>Samples: 772K of event &#39;cycles:P&#39;, Event count (approx.): 69175341094
+Overhead  Command          Shared Object                         Symbol
+  39.64%  intermediate-ma  libm.so.6                             [.] __ieee754_pow_fma
+  18.29%  intermediate-ma  libm.so.6                             [.] __cos_fma
+  17.79%  intermediate-ma  libm.so.6                             [.] pow@@GLIBC_2.29
+  13.12%  intermediate-ma  intermediate-main-cos-smallangle.out  [.] f_intermediate
+   4.91%  intermediate-ma  intermediate-main-cos-smallangle.out  [.] integral_riemann
+   4.67%  intermediate-ma  intermediate-main-cos-smallangle.out  [.] pow@plt</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 14392529</code></pre>
+<p>This shows a speedup, but nowhere near as dramatic as the one in
+<code>f_simple()</code>.</p>
+<p><br></p>
+<h4 id="positive-case">Positive Case</h4>
+<p>Another optimisation considered was to consider the user case for
+<code>x &gt;= 0</code> only, since this would reduce the number of
+comparisons made. This had positive effects on performance, but
+introduces limits on use cases for the code. Of course, the problem
+could be split up in a way where any negative values are handled by a
+different optimised function.</p>
+<p>The new code looks like this:</p>
+<div class="sourceCode" id="cb44"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb44-1"><a href="#cb44-1" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> __attribute__ <span class="op">((</span>always_inline<span class="op">))</span> <span class="kw">inline</span> cosine_approx<span class="op">(</span><span class="dt">double</span> x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb44-2"><a href="#cb44-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> res<span class="op">;</span></span>
+<span id="cb44-3"><a href="#cb44-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Cosine small angle approximation</span></span>
+<span id="cb44-4"><a href="#cb44-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>x <span class="op">&lt;=</span> <span class="dv">0</span><span class="er">.05</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb44-5"><a href="#cb44-5" aria-hidden="true" tabindex="-1"></a>        res <span class="op">=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb44-6"><a href="#cb44-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">else</span> <span class="cf">if</span> <span class="op">(</span>x <span class="op">&lt;=</span> <span class="dv">0</span><span class="er">.4</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb44-7"><a href="#cb44-7" aria-hidden="true" tabindex="-1"></a>        res <span class="op">=</span> <span class="op">(</span><span class="dv">1</span> <span class="op">-</span> <span class="op">(</span>x <span class="op">*</span> x<span class="op">)/</span><span class="dv">2</span><span class="op">);</span></span>
+<span id="cb44-8"><a href="#cb44-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">else</span> <span class="op">{</span></span>
+<span id="cb44-9"><a href="#cb44-9" aria-hidden="true" tabindex="-1"></a>        res <span class="op">=</span> cos<span class="op">(</span>x<span class="op">);</span></span>
+<span id="cb44-10"><a href="#cb44-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb44-11"><a href="#cb44-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> res<span class="op">;</span></span>
+<span id="cb44-12"><a href="#cb44-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h5 id="measurement---simple-4">Measurement - Simple</h5>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./simple-main-cos-smallangle-positive.out&#39; (5 runs):
+
+          5,037.39 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.48% )
+                18      context-switches                 #    3.573 /sec                        ( +- 34.40% )
+                 0      cpu-migrations                   #    0.000 /sec                 
+                75      page-faults                      #   14.889 /sec                        ( +-  0.90% )
+    24,082,388,129      cycles                           #    4.781 GHz                         ( +-  0.05% )  (71.40%)
+        42,237,868      stalled-cycles-frontend          #    0.18% frontend cycles idle        ( +-  0.81% )  (71.41%)
+    71,366,823,827      instructions                     #    2.96  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.01% )  (71.44%)
+     9,382,241,698      branches                         #    1.863 G/sec                       ( +-  0.01% )  (71.45%)
+         1,215,278      branch-misses                    #    0.01% of all branches             ( +-  0.59% )  (71.44%)
+    24,704,129,288      L1-dcache-loads                  #    4.904 G/sec                       ( +-  0.01% )  (71.44%)
+           559,475      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  3.00% )  (71.42%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+            5.0388 +- 0.0242 seconds time elapsed  ( +-  0.48% )</code></pre>
+<p><code>perf record</code>:</p>
+<pre><code>Samples: 267K of event &#39;cycles:P&#39;, Event count (approx.): 24417293220
+Overhead  Command          Shared Object                            Symbol
+  37.32%  simple-main-cos  simple-main-cos-smallangle-positive.out  [.] f_simple
+  35.62%  simple-main-cos  libm.so.6                                [.] __cos_fma
+  17.75%  simple-main-cos  simple-main-cos-smallangle-positive.out  [.] integral_riemann
+   9.04%  simple-main-cos  simple-main-cos-smallangle-positive.out  [.] cos@plt</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 5080937</code></pre>
+<h5 id="measurement---intermediate-5">Measurement - Intermediate</h5>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./intermediate-main-smallangle-positive.out&#39; (5 runs):
+
+         13,997.15 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.36% )
+               289      context-switches                 #   20.647 /sec                        ( +- 52.51% )
+                 2      cpu-migrations                   #    0.143 /sec                        ( +- 33.17% )
+                77      page-faults                      #    5.501 /sec                        ( +-  1.12% )
+    67,219,780,786      cycles                           #    4.802 GHz                         ( +-  0.06% )  (71.43%)
+       127,900,502      stalled-cycles-frontend          #    0.19% frontend cycles idle        ( +-  2.95% )  (71.43%)
+   212,453,637,442      instructions                     #    3.16  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.01% )  (71.43%)
+    22,398,954,888      branches                         #    1.600 G/sec                       ( +-  0.01% )  (71.43%)
+         3,429,936      branch-misses                    #    0.02% of all branches             ( +-  1.22% )  (71.43%)
+    58,753,448,326      L1-dcache-loads                  #    4.198 G/sec                       ( +-  0.01% )  (71.43%)
+         1,996,239      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  4.74% )  (71.42%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+           14.0006 +- 0.0510 seconds time elapsed  ( +-  0.36% )</code></pre>
+<p><code>perf record</code>:</p>
+<pre><code>Samples: 754K of event &#39;cycles:P&#39;, Event count (approx.): 68122746263
+Overhead  Command          Shared Object                              Symbol
+  40.86%  intermediate-ma  libm.so.6                                  [.] __ieee754_pow_f
+  19.72%  intermediate-ma  libm.so.6                                  [.] pow@@GLIBC_2.29
+  19.66%  intermediate-ma  libm.so.6                                  [.] __cos_fma
+  10.70%  intermediate-ma  intermediate-main-smallangle-positive.out  [.] f_intermediate
+   5.09%  intermediate-ma  intermediate-main-smallangle-positive.out  [.] integral_rieman
+   2.92%  intermediate-ma  libm.so.6                                  [.] __pow_finite@GL</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 14154213</code></pre>
+<hr>
+<h3 id="optimising-instruction-cache-access">Optimising Instruction
+Cache Access</h3>
+<p>This section makes use of information and macros from part of <a
+href="https://lwn.net/Articles/255364/">Halvar’s LWN series on memory
+and performance</a>.</p>
+<p>An attempt was made to improve branch prediction by reordering the
+small angle check and making use of the <code>__builtin_expect</code>
+branch hint. This was placed on the most taken branch path <em>for the
+tested intergral bounds</em>. This may not apply if using different
+integration bounds.</p>
+<p>The new function looks like this:</p>
+<div class="sourceCode" id="cb51"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb51-1"><a href="#cb51-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#define likely</span><span class="op">(</span><span class="pp">expr</span><span class="op">)</span><span class="pp"> __builtin_expect</span><span class="op">(!!(</span><span class="pp">expr</span><span class="op">),</span><span class="pp"> </span><span class="dv">1</span><span class="op">)</span></span>
+<span id="cb51-2"><a href="#cb51-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb51-3"><a href="#cb51-3" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> __attribute__ <span class="op">((</span>always_inline<span class="op">))</span> <span class="kw">inline</span> cosine_approx<span class="op">(</span><span class="dt">double</span> x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb51-4"><a href="#cb51-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> res<span class="op">;</span></span>
+<span id="cb51-5"><a href="#cb51-5" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Cosine small angle approximation</span></span>
+<span id="cb51-6"><a href="#cb51-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>likely<span class="op">(</span>x <span class="op">&lt;=</span> <span class="dv">0</span><span class="er">.4</span><span class="op">))</span> <span class="op">{</span></span>
+<span id="cb51-7"><a href="#cb51-7" aria-hidden="true" tabindex="-1"></a>        res <span class="op">=</span> <span class="op">(</span><span class="dv">1</span> <span class="op">-</span> <span class="op">(</span>x <span class="op">*</span> x<span class="op">)/</span><span class="dv">2</span><span class="op">);</span></span>
+<span id="cb51-8"><a href="#cb51-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">else</span> <span class="cf">if</span> <span class="op">(</span>x <span class="op">&lt;=</span> <span class="dv">0</span><span class="er">.05</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb51-9"><a href="#cb51-9" aria-hidden="true" tabindex="-1"></a>        res <span class="op">=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb51-10"><a href="#cb51-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">else</span> <span class="op">{</span></span>
+<span id="cb51-11"><a href="#cb51-11" aria-hidden="true" tabindex="-1"></a>        res <span class="op">=</span> cos<span class="op">(</span>x<span class="op">);</span></span>
+<span id="cb51-12"><a href="#cb51-12" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb51-13"><a href="#cb51-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> res<span class="op">;</span></span>
+<span id="cb51-14"><a href="#cb51-14" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>The code was also compiled with the <code>-freorder-blocks</code>
+flag.</p>
+<h4 id="measurement---simple-5">Measurement - Simple</h4>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./simple-main-cos-smallangle-likelymacro.out&#39; (5 runs):
+
+          4,940.79 msec task-clock                       #    0.999 CPUs utilized               ( +-  0.28% )
+               171      context-switches                 #   34.610 /sec                        ( +- 94.18% )
+                 0      cpu-migrations                   #    0.000 /sec                 
+                75      page-faults                      #   15.180 /sec                        ( +-  0.78% )
+    23,849,673,126      cycles                           #    4.827 GHz                         ( +-  0.11% )  (71.42%)
+        47,761,477      stalled-cycles-frontend          #    0.20% frontend cycles idle        ( +-  8.31% )  (71.43%)
+    73,416,966,946      instructions                     #    3.08  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.03% )  (71.42%)
+     8,936,583,017      branches                         #    1.809 G/sec                       ( +-  0.03% )  (71.43%)
+         1,253,011      branch-misses                    #    0.01% of all branches             ( +-  3.72% )  (71.43%)
+    24,322,566,217      L1-dcache-loads                  #    4.923 G/sec                       ( +-  0.02% )  (71.44%)
+           682,118      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +- 13.71% )  (71.42%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+            4.9435 +- 0.0147 seconds time elapsed  ( +-  0.30% )</code></pre>
+<p><code>perf report</code>:</p>
+<pre><code>Samples: 263K of event &#39;cycles:Pu&#39;, Event count (approx.): 24178630728
+Overhead  Command          Shared Object                           Symbol
+  55.93%  simple-main-sma  simple-main-smallangle-likelymacro.out  [.] integral_riemann
+  31.78%  simple-main-sma  simple-main-smallangle-likelymacro.out  [.] f_simple
+  12.24%  simple-main-sma  libm.so.6                               [.] __cos_fma</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 5012777</code></pre>
+<h4 id="measurement---intermediate-6">Measurement - Intermediate</h4>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./intermediate-main-smallangle-likelymacro.out&#39; (5 runs):
+
+         13,958.08 msec task-clock                       #    0.999 CPUs utilized               ( +-  0.19% )
+               883      context-switches                 #   63.261 /sec                        ( +- 33.01% )
+                 2      cpu-migrations                   #    0.143 /sec                        ( +- 75.83% )
+                75      page-faults                      #    5.373 /sec                        ( +-  1.44% )
+    67,045,218,431      cycles                           #    4.803 GHz                         ( +-  0.05% )  (71.42%)
+       127,879,489      stalled-cycles-frontend          #    0.19% frontend cycles idle        ( +-  1.49% )  (71.42%)
+   214,465,059,223      instructions                     #    3.20  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.00% )  (71.43%)
+    21,953,824,530      branches                         #    1.573 G/sec                       ( +-  0.00% )  (71.43%)
+         3,461,325      branch-misses                    #    0.02% of all branches             ( +-  1.17% )  (71.43%)
+    58,376,508,362      L1-dcache-loads                  #    4.182 G/sec                       ( +-  0.01% )  (71.44%)
+         2,236,603      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  4.43% )  (71.43%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+           13.9658 +- 0.0257 seconds time elapsed  ( +-  0.18% )</code></pre>
+<p><code>perf report</code>:</p>
+<pre><code>Samples: 749K of event &#39;cycles:P&#39;, Event count (approx.): 67925470235
+Overhead  Command          Shared Object                                 Symbol
+  39.80%  intermediate-ma  libm.so.6                                     [.] __ieee754_po
+  21.81%  intermediate-ma  libm.so.6                                     [.] pow@@GLIBC_2
+  19.22%  intermediate-ma  libm.so.6                                     [.] __cos_fma
+  11.26%  intermediate-ma  intermediate-main-smallangle-likelymacro.out  [.] f_intermedia
+   5.96%  intermediate-ma  intermediate-main-smallangle-likelymacro.out  [.] integral_rie</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 14004255</code></pre>
+<hr>
+<h3 id="algorithm-modification---taylor-expansion">Algorithm
+Modification - Taylor Expansion</h3>
+<p>One way of representing certain functions is with a <a
+href="https://en.wikipedia.org/wiki/Taylor_series">Taylor series</a>.
+These will be used to in place of the <code>cos()</code> and
+<code>pow()</code> functions in the code. The idea is that perhaps these
+approximations might be faster while also being accurate enough for our
+purposes.</p>
+<p>Another reason for doing this is to make it more straightforward to
+vectorise the new Taylor expansions using SIMD instructions than it
+would be to vectorise the trigonometric/exponential functions (since
+there are no instrinsics for these trig functions). This topic is
+explored in the next section.</p>
+<p>The Taylor series of the <code>cos()</code> function is:</p>
+<p><span class="math display">\[ 1 - x^2/2! + x^4/4! - x^6/6! + ... =
+\sum_{i=0}^\infty (-1)^i (x^{2i}/(2i)!) \]</span></p>
+<p>The Taylor series of the exponential function is:</p>
+<p><span class="math display">\[ 1 + x + x^2/2! + x^3/3! + ... =
+\sum_{i=0}^\infty x^i/i! \]</span></p>
+<p>A limit of 6 terms was set for the expansion of <code>cos()</code>,
+and 7 for the expansion of the exponential. This was chosen as a
+tradeoff between runtime and accuracy.</p>
+<p>In C, these functions are implemented as</p>
+<div class="sourceCode" id="cb58"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb58-1"><a href="#cb58-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Valid for inputs &lt;= 12. Errors ignored</span></span>
+<span id="cb58-2"><a href="#cb58-2" aria-hidden="true" tabindex="-1"></a><span class="dt">int</span> __attribute__ <span class="op">((</span>always_inline<span class="op">))</span> <span class="kw">inline</span> factorial_int<span class="op">(</span><span class="dt">int</span> x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb58-3"><a href="#cb58-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>x <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb58-4"><a href="#cb58-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb58-5"><a href="#cb58-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb58-6"><a href="#cb58-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> ret <span class="op">=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb58-7"><a href="#cb58-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">1</span><span class="op">;</span> i <span class="op">&lt;=</span> x<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb58-8"><a href="#cb58-8" aria-hidden="true" tabindex="-1"></a>        ret <span class="op">*=</span> i<span class="op">;</span></span>
+<span id="cb58-9"><a href="#cb58-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb58-10"><a href="#cb58-10" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> ret<span class="op">;</span></span>
+<span id="cb58-11"><a href="#cb58-11" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb58-12"><a href="#cb58-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb58-13"><a href="#cb58-13" aria-hidden="true" tabindex="-1"></a><span class="co">// Valid for fairly small x due to the potential for the x^2n term to explode</span></span>
+<span id="cb58-14"><a href="#cb58-14" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> __attribute__ <span class="op">((</span>always_inline<span class="op">))</span> <span class="kw">inline</span> taylor_cos<span class="op">(</span><span class="dt">double</span> x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb58-15"><a href="#cb58-15" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> ret <span class="op">=</span> <span class="dv">0</span><span class="er">.0</span><span class="op">;</span></span>
+<span id="cb58-16"><a href="#cb58-16" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> pow_sum <span class="op">=</span> <span class="fl">1.0</span><span class="op">;</span></span>
+<span id="cb58-17"><a href="#cb58-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb58-18"><a href="#cb58-18" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 6 term expansion</span></span>
+<span id="cb58-19"><a href="#cb58-19" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> num_terms <span class="op">=</span> <span class="dv">6</span><span class="op">;</span></span>
+<span id="cb58-20"><a href="#cb58-20" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> num_terms<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb58-21"><a href="#cb58-21" aria-hidden="true" tabindex="-1"></a>        pow_sum <span class="op">=</span> <span class="fl">1.0</span><span class="op">;</span></span>
+<span id="cb58-22"><a href="#cb58-22" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> n <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> n <span class="op">&lt;</span> <span class="op">(</span><span class="dv">2</span> <span class="op">*</span> i<span class="op">);</span> n<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb58-23"><a href="#cb58-23" aria-hidden="true" tabindex="-1"></a>            pow_sum <span class="op">*=</span> x<span class="op">;</span></span>
+<span id="cb58-24"><a href="#cb58-24" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb58-25"><a href="#cb58-25" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Odd terms have a negative sign</span></span>
+<span id="cb58-26"><a href="#cb58-26" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">((</span>i <span class="op">&amp;</span> <span class="dv">1</span><span class="op">))</span> <span class="op">{</span></span>
+<span id="cb58-27"><a href="#cb58-27" aria-hidden="true" tabindex="-1"></a>            pow_sum <span class="op">*=</span> <span class="op">(-</span><span class="dv">1</span><span class="op">);</span></span>
+<span id="cb58-28"><a href="#cb58-28" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb58-29"><a href="#cb58-29" aria-hidden="true" tabindex="-1"></a>        ret <span class="op">+=</span> <span class="op">(</span>pow_sum <span class="op">/</span> <span class="op">(</span><span class="dt">double</span><span class="op">)(</span>factorial_int<span class="op">(</span><span class="dv">2</span> <span class="op">*</span> i<span class="op">)));</span></span>
+<span id="cb58-30"><a href="#cb58-30" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb58-31"><a href="#cb58-31" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> ret<span class="op">;</span></span>
+<span id="cb58-32"><a href="#cb58-32" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb58-33"><a href="#cb58-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb58-34"><a href="#cb58-34" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> __attribute__ <span class="op">((</span>always_inline<span class="op">))</span> <span class="kw">inline</span> taylor_exp<span class="op">(</span><span class="dt">double</span> x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb58-35"><a href="#cb58-35" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> ret <span class="op">=</span> <span class="dv">0</span><span class="er">.0</span><span class="op">;</span></span>
+<span id="cb58-36"><a href="#cb58-36" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> pow_sum <span class="op">=</span> <span class="fl">1.0</span><span class="op">;</span></span>
+<span id="cb58-37"><a href="#cb58-37" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> num_terms <span class="op">=</span> <span class="dv">7</span><span class="op">;</span></span>
+<span id="cb58-38"><a href="#cb58-38" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> num_terms<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb58-39"><a href="#cb58-39" aria-hidden="true" tabindex="-1"></a>        pow_sum <span class="op">=</span> <span class="fl">1.0</span><span class="op">;</span></span>
+<span id="cb58-40"><a href="#cb58-40" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> n <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> n <span class="op">&lt;</span> i<span class="op">;</span> n<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb58-41"><a href="#cb58-41" aria-hidden="true" tabindex="-1"></a>            pow_sum <span class="op">*=</span> x<span class="op">;</span></span>
+<span id="cb58-42"><a href="#cb58-42" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb58-43"><a href="#cb58-43" aria-hidden="true" tabindex="-1"></a>        ret <span class="op">+=</span> <span class="op">(</span>pow_sum <span class="op">/</span> <span class="op">(</span><span class="dt">double</span><span class="op">)</span>factorial_int<span class="op">(</span>i<span class="op">));</span></span>
+<span id="cb58-44"><a href="#cb58-44" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb58-45"><a href="#cb58-45" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> ret<span class="op">;</span></span>
+<span id="cb58-46"><a href="#cb58-46" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>In practice, without optimisations the resulting code was much
+slower- the <code>f_simple</code> test took about 64 seconds to
+complete. <em>With</em> <code>-O3</code> optimisations enabled, however,
+results were much better than using the math library functions.</p>
+<p>Some very interesting behaviour was observed here. In the
+<code>factorial_int()</code> function above, the first branch checking
+for <code>x == 0</code> was redundant- the code would’ve returned the
+correct results regardless. However, if the check was removed the
+resulting assembly output for the function was larger, and took &gt; 3
+times longer to execute. With it, the compiler produced smaller,
+branchless code:</p>
+<pre><code>00000000004011f0 &lt;f_simple&gt;:
+  4011f0:   66 0f 28 c8             movapd xmm1,xmm0
+  4011f4:   f2 0f 10 15 74 0e 00    movsd  xmm2,QWORD PTR [rip+0xe74]        # 402070 &lt;__dso_handle+0x68&gt;
+  4011fb:   00
+  4011fc:   f3 0f 7e 25 2c 0e 00    movq   xmm4,QWORD PTR [rip+0xe2c]        # 402030 &lt;__dso_handle+0x28&gt;
+  401203:   00
+  401204:   f2 0f 59 c8             mulsd  xmm1,xmm0
+  401208:   f2 0f 59 d1             mulsd  xmm2,xmm1
+  40120c:   f2 0f 59 c8             mulsd  xmm1,xmm0
+  401210:   f2 0f 58 15 30 0e 00    addsd  xmm2,QWORD PTR [rip+0xe30]        # 402048 &lt;__dso_handle+0x40&gt;
+  401217:   00
+  401218:   f2 0f 59 c8             mulsd  xmm1,xmm0
+  40121c:   66 0f 28 d9             movapd xmm3,xmm1
+  401220:   f2 0f 5e 1d 28 0e 00    divsd  xmm3,QWORD PTR [rip+0xe28]        # 402050 &lt;__dso_handle+0x48&gt;
+  401227:   00
+  401228:   f2 0f 58 da             addsd  xmm3,xmm2
+  40122c:   f2 0f 59 c8             mulsd  xmm1,xmm0
+  401230:   f2 0f 59 c8             mulsd  xmm1,xmm0
+  401234:   66 0f 28 d1             movapd xmm2,xmm1
+  401238:   f2 0f 59 c8             mulsd  xmm1,xmm0
+  40123c:   66 0f 57 d4             xorpd  xmm2,xmm4
+  401240:   f2 0f 5e 15 10 0e 00    divsd  xmm2,QWORD PTR [rip+0xe10]        # 402058 &lt;__dso_handle+0x50&gt;
+  401247:   00
+  401248:   f2 0f 58 d3             addsd  xmm2,xmm3
+  40124c:   f2 0f 59 c8             mulsd  xmm1,xmm0
+  401250:   66 0f 28 d9             movapd xmm3,xmm1
+  401254:   f2 0f 5e 1d 04 0e 00    divsd  xmm3,QWORD PTR [rip+0xe04]        # 402060 &lt;__dso_handle+0x58&gt;
+  40125b:   00
+  40125c:   f2 0f 58 d3             addsd  xmm2,xmm3
+  401260:   f2 0f 59 c8             mulsd  xmm1,xmm0
+  401264:   f2 0f 59 c1             mulsd  xmm0,xmm1
+  401268:   66 0f 57 c4             xorpd  xmm0,xmm4
+  40126c:   f2 0f 5e 05 f4 0d 00    divsd  xmm0,QWORD PTR [rip+0xdf4]        # 402068 &lt;__dso_handle+0x60&gt;
+  401273:   00
+  401274:   f2 0f 58 c2             addsd  xmm0,xmm2
+  401278:   c3                      ret
+  401279:   0f 1f 80 00 00 00 00    nop    DWORD PTR [rax+0x0]</code></pre>
+<p>Decompilation using Ghidra more clearly shows the impressive
+optimisations made by the compiler:</p>
+<div class="sourceCode" id="cb60"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb60-1"><a href="#cb60-1" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> f_simple<span class="op">(</span><span class="dt">double</span> param_1<span class="op">)</span></span>
+<span id="cb60-2"><a href="#cb60-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb60-3"><a href="#cb60-3" aria-hidden="true" tabindex="-1"></a><span class="op">{</span></span>
+<span id="cb60-4"><a href="#cb60-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">double</span> dVar1<span class="op">;</span></span>
+<span id="cb60-5"><a href="#cb60-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">double</span> dVar2<span class="op">;</span></span>
+<span id="cb60-6"><a href="#cb60-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">double</span> dVar3<span class="op">;</span></span>
+<span id="cb60-7"><a href="#cb60-7" aria-hidden="true" tabindex="-1"></a>  </span>
+<span id="cb60-8"><a href="#cb60-8" aria-hidden="true" tabindex="-1"></a>  dVar1 <span class="op">=</span> param_1 <span class="op">*</span> param_1 <span class="op">*</span> param_1 <span class="op">*</span> param_1<span class="op">;</span></span>
+<span id="cb60-9"><a href="#cb60-9" aria-hidden="true" tabindex="-1"></a>  dVar2 <span class="op">=</span> dVar1 <span class="op">*</span> param_1 <span class="op">*</span> param_1<span class="op">;</span></span>
+<span id="cb60-10"><a href="#cb60-10" aria-hidden="true" tabindex="-1"></a>  dVar3 <span class="op">=</span> dVar2 <span class="op">*</span> param_1 <span class="op">*</span> param_1<span class="op">;</span></span>
+<span id="cb60-11"><a href="#cb60-11" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> <span class="op">-(</span>param_1 <span class="op">*</span> dVar3 <span class="op">*</span> param_1<span class="op">)</span> <span class="op">/</span> <span class="fl">3628800.0</span> <span class="op">+</span></span>
+<span id="cb60-12"><a href="#cb60-12" aria-hidden="true" tabindex="-1"></a>         <span class="op">-</span>dVar2 <span class="op">/</span> <span class="fl">720.0</span> <span class="op">+</span> dVar1 <span class="op">/</span> <span class="fl">24.0</span> <span class="op">+</span> param_1 <span class="op">*</span> param_1 <span class="op">*</span> <span class="op">-</span><span class="dv">0</span><span class="er">.5</span> <span class="op">+</span> <span class="fl">1.0</span> <span class="op">+</span> dVar3 <span class="op">/</span> <span class="fl">40320.0</span><span class="op">;</span></span>
+<span id="cb60-13"><a href="#cb60-13" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Contrast this with code produced if the seemingly unrelated,
+redundant check is removed:</p>
+<div class="sourceCode" id="cb61"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb61-1"><a href="#cb61-1" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> f_simple<span class="op">(</span><span class="dt">double</span> x<span class="op">)</span></span>
+<span id="cb61-2"><a href="#cb61-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-3"><a href="#cb61-3" aria-hidden="true" tabindex="-1"></a><span class="op">{</span></span>
+<span id="cb61-4"><a href="#cb61-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">int</span> iVar1<span class="op">;</span></span>
+<span id="cb61-5"><a href="#cb61-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">int</span> iVar2<span class="op">;</span></span>
+<span id="cb61-6"><a href="#cb61-6" aria-hidden="true" tabindex="-1"></a>  uint uVar3<span class="op">;</span></span>
+<span id="cb61-7"><a href="#cb61-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">int</span> iVar4<span class="op">;</span></span>
+<span id="cb61-8"><a href="#cb61-8" aria-hidden="true" tabindex="-1"></a>  uint uVar5<span class="op">;</span></span>
+<span id="cb61-9"><a href="#cb61-9" aria-hidden="true" tabindex="-1"></a>  <span class="dt">double</span> dVar6<span class="op">;</span></span>
+<span id="cb61-10"><a href="#cb61-10" aria-hidden="true" tabindex="-1"></a>  <span class="dt">double</span> dVar7<span class="op">;</span></span>
+<span id="cb61-11"><a href="#cb61-11" aria-hidden="true" tabindex="-1"></a>  </span>
+<span id="cb61-12"><a href="#cb61-12" aria-hidden="true" tabindex="-1"></a>  iVar4 <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb61-13"><a href="#cb61-13" aria-hidden="true" tabindex="-1"></a>  dVar7 <span class="op">=</span> <span class="dv">0</span><span class="er">.0</span><span class="op">;</span></span>
+<span id="cb61-14"><a href="#cb61-14" aria-hidden="true" tabindex="-1"></a>  uVar5 <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb61-15"><a href="#cb61-15" aria-hidden="true" tabindex="-1"></a>  iVar2 <span class="op">=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb61-16"><a href="#cb61-16" aria-hidden="true" tabindex="-1"></a>  <span class="cf">do</span> <span class="op">{</span></span>
+<span id="cb61-17"><a href="#cb61-17" aria-hidden="true" tabindex="-1"></a>    dVar6 <span class="op">=</span> <span class="fl">1.0</span><span class="op">;</span></span>
+<span id="cb61-18"><a href="#cb61-18" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>iVar4 <span class="op">!=</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb61-19"><a href="#cb61-19" aria-hidden="true" tabindex="-1"></a>      dVar6 <span class="op">=</span> x <span class="op">*</span> x<span class="op">;</span></span>
+<span id="cb61-20"><a href="#cb61-20" aria-hidden="true" tabindex="-1"></a>      <span class="cf">if</span> <span class="op">((((</span>iVar4 <span class="op">==</span> <span class="dv">2</span><span class="op">)</span> <span class="op">||</span> <span class="op">(</span>dVar6 <span class="op">=</span> dVar6 <span class="op">*</span> x <span class="op">*</span> x<span class="op">,</span> iVar4 <span class="op">==</span> <span class="dv">4</span><span class="op">))</span> <span class="op">||</span></span>
+<span id="cb61-21"><a href="#cb61-21" aria-hidden="true" tabindex="-1"></a>          <span class="op">(</span>dVar6 <span class="op">=</span> dVar6 <span class="op">*</span> x <span class="op">*</span> x<span class="op">,</span> iVar4 <span class="op">==</span> <span class="dv">6</span><span class="op">))</span> <span class="op">||</span></span>
+<span id="cb61-22"><a href="#cb61-22" aria-hidden="true" tabindex="-1"></a>         <span class="op">((</span>dVar6 <span class="op">=</span> dVar6 <span class="op">*</span> x <span class="op">*</span> x<span class="op">,</span> iVar4 <span class="op">==</span> <span class="dv">8</span> <span class="op">||</span> <span class="op">(</span>dVar6 <span class="op">=</span> dVar6 <span class="op">*</span> x<span class="op">,</span> iVar4 <span class="op">!=</span> <span class="dv">10</span><span class="op">))))</span> <span class="op">{</span></span>
+<span id="cb61-23"><a href="#cb61-23" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">((</span>uVar5 <span class="op">&amp;</span> <span class="dv">1</span><span class="op">)</span> <span class="op">!=</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb61-24"><a href="#cb61-24" aria-hidden="true" tabindex="-1"></a>          dVar6 <span class="op">=</span> <span class="op">-</span>dVar6<span class="op">;</span></span>
+<span id="cb61-25"><a href="#cb61-25" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb61-26"><a href="#cb61-26" aria-hidden="true" tabindex="-1"></a>      <span class="op">}</span></span>
+<span id="cb61-27"><a href="#cb61-27" aria-hidden="true" tabindex="-1"></a>      <span class="cf">else</span> <span class="op">{</span></span>
+<span id="cb61-28"><a href="#cb61-28" aria-hidden="true" tabindex="-1"></a>        dVar6 <span class="op">=</span> dVar6 <span class="op">*</span> x<span class="op">;</span></span>
+<span id="cb61-29"><a href="#cb61-29" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">((</span>uVar5 <span class="op">&amp;</span> <span class="dv">1</span><span class="op">)</span> <span class="op">!=</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb61-30"><a href="#cb61-30" aria-hidden="true" tabindex="-1"></a>          dVar6 <span class="op">=</span> <span class="op">-</span>dVar6<span class="op">;</span></span>
+<span id="cb61-31"><a href="#cb61-31" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb61-32"><a href="#cb61-32" aria-hidden="true" tabindex="-1"></a>      <span class="op">}</span></span>
+<span id="cb61-33"><a href="#cb61-33" aria-hidden="true" tabindex="-1"></a>      iVar1 <span class="op">=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb61-34"><a href="#cb61-34" aria-hidden="true" tabindex="-1"></a>      uVar3 <span class="op">=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb61-35"><a href="#cb61-35" aria-hidden="true" tabindex="-1"></a>      <span class="cf">do</span> <span class="op">{</span></span>
+<span id="cb61-36"><a href="#cb61-36" aria-hidden="true" tabindex="-1"></a>        uVar3 <span class="op">=</span> uVar3 <span class="op">*</span> iVar1<span class="op">;</span></span>
+<span id="cb61-37"><a href="#cb61-37" aria-hidden="true" tabindex="-1"></a>        iVar1 <span class="op">=</span> iVar1 <span class="op">+</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb61-38"><a href="#cb61-38" aria-hidden="true" tabindex="-1"></a>      <span class="op">}</span> <span class="cf">while</span> <span class="op">(</span>iVar2 <span class="op">!=</span> iVar1<span class="op">);</span></span>
+<span id="cb61-39"><a href="#cb61-39" aria-hidden="true" tabindex="-1"></a>      dVar6 <span class="op">=</span> dVar6 <span class="op">/</span> <span class="op">(</span><span class="dt">double</span><span class="op">)</span>uVar3<span class="op">;</span></span>
+<span id="cb61-40"><a href="#cb61-40" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb61-41"><a href="#cb61-41" aria-hidden="true" tabindex="-1"></a>    uVar5 <span class="op">=</span> uVar5 <span class="op">+</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb61-42"><a href="#cb61-42" aria-hidden="true" tabindex="-1"></a>    dVar7 <span class="op">=</span> dVar7 <span class="op">+</span> dVar6<span class="op">;</span></span>
+<span id="cb61-43"><a href="#cb61-43" aria-hidden="true" tabindex="-1"></a>    iVar4 <span class="op">=</span> iVar4 <span class="op">+</span> <span class="dv">2</span><span class="op">;</span></span>
+<span id="cb61-44"><a href="#cb61-44" aria-hidden="true" tabindex="-1"></a>    iVar2 <span class="op">=</span> iVar2 <span class="op">+</span> <span class="dv">2</span><span class="op">;</span></span>
+<span id="cb61-45"><a href="#cb61-45" aria-hidden="true" tabindex="-1"></a>  <span class="op">}</span> <span class="cf">while</span> <span class="op">(</span>uVar5 <span class="op">!=</span> <span class="dv">6</span><span class="op">);</span></span>
+<span id="cb61-46"><a href="#cb61-46" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> dVar7<span class="op">;</span></span>
+<span id="cb61-47"><a href="#cb61-47" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>I’m not entirely sure what caused this behaviour (perhaps the
+compiler could make better assumptions about the code?), but it
+<em>was</em> interesting to see.</p>
+<p>All measurements are done with the optimised version (with redundant
+check).</p>
+<h4 id="measurement---simple-6">Measurement - Simple</h4>
+<p>Accuracy seems good:</p>
+<pre><code>Riemann:    0.707107
+Analytical: 0.707107</code></pre>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./simple-main-taylor-o3.out&#39; (5 runs):
+
+          3,674.00 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.56% )
+                11      context-switches                 #    2.994 /sec                        ( +-  6.80% )
+                 0      cpu-migrations                   #    0.000 /sec                 
+                75      page-faults                      #   20.414 /sec                        ( +-  0.90% )
+    18,085,666,563      cycles                           #    4.923 GHz                         ( +-  0.01% )  (71.42%)
+        35,233,557      stalled-cycles-frontend          #    0.19% frontend cycles idle        ( +-  1.07% )  (71.42%)
+    41,046,867,512      instructions                     #    2.27  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.01% )  (71.41%)
+     3,008,201,839      branches                         #  818.780 M/sec                       ( +-  0.01% )  (71.42%)
+           882,609      branch-misses                    #    0.03% of all branches             ( +-  0.49% )  (71.46%)
+    11,013,661,662      L1-dcache-loads                  #    2.998 G/sec                       ( +-  0.01% )  (71.45%)
+           411,099      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  4.01% )  (71.42%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+            3.6756 +- 0.0206 seconds time elapsed  ( +-  0.56% )</code></pre>
+<p><code>perf report</code>:</p>
+<pre><code>Samples: 195K of event &#39;cycles:P&#39;, Event count (approx.): 18280118774
+Overhead  Command          Shared Object              Symbol
+  63.30%  simple-main-tay  simple-main-taylor-o3.out  [.] f_simple
+  36.42%  simple-main-tay  simple-main-taylor-o3.out  [.] integral_riemann</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 3701438</code></pre>
+<h4 id="measurement---intermediate-7">Measurement - Intermediate</h4>
+<p>The accuracy took a hit for the intermediate version:</p>
+<pre><code>Riemann:    0.442617
+Analytical: 0.442619</code></pre>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./intermediate-main-taylor-o3.out&#39; (5 runs):
+
+          9,629.54 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.65% )
+                25      context-switches                 #    2.596 /sec                        ( +- 10.32% )
+                 1      cpu-migrations                   #    0.104 /sec                        ( +- 48.99% )
+                75      page-faults                      #    7.789 /sec                        ( +-  1.37% )
+    46,336,699,762      cycles                           #    4.812 GHz                         ( +-  0.58% )  (71.43%)
+       121,653,732      stalled-cycles-frontend          #    0.26% frontend cycles idle        ( +-  7.55% )  (71.43%)
+   237,080,118,269      instructions                     #    5.12  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.01% )  (71.43%)
+    45,024,959,424      branches                         #    4.676 G/sec                       ( +-  0.02% )  (71.43%)
+         2,268,957      branch-misses                    #    0.01% of all branches             ( +-  1.25% )  (71.43%)
+    11,033,769,118      L1-dcache-loads                  #    1.146 G/sec                       ( +-  0.01% )  (71.43%)
+           936,905      L1-dcache-load-misses            #    0.01% of all L1-dcache accesses   ( +-  5.39% )  (71.43%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+            9.6312 +- 0.0620 seconds time elapsed  ( +-  0.64% )</code></pre>
+<p><code>perf report</code>:</p>
+<pre><code>Samples: 520K of event &#39;cycles:P&#39;, Event count (approx.): 47339270492
+Overhead  Command          Shared Object                    Symbol
+  93.65%  intermediate-ma  intermediate-main-taylor-o3.out  [.] f_intermediate
+   6.09%  intermediate-ma  intermediate-main-taylor-o3.out  [.] integral_riemann</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 9660417</code></pre>
+<p>What’s interesting to see here is that this caused more instructions
+to be executed than the base case (<code>237,113,434,810</code> vs
+<code>235,111,065,770</code>), yet execution was significantly faster.
+There were also less branch misses (<code>45,040</code> vs
+<code>3,867,468</code>), and less L1-dache-loads
+(<code>11,016,800,665</code> vs <code>65,087,953,018</code>) and dcache
+misses (<code>3,066</code> vs <code>1,848,541</code>). This shows that
+the lower amount of branch misses and better cache usage has significant
+performance implications.</p>
+<hr>
+<h3 id="simd-instructions">SIMD Instructions</h3>
+<p>This section looks at ‘Single Instruction, Multiple Data’ (SIMD)
+instructions to perform some parallel processing of data on a single
+core.</p>
+<p>These extensions use special, high width registers (128, 256, 512
+bits wide) to store multiple pieces of data (e.g. several
+<code>int</code>s) and perform the same operation on all pieces of the
+data at the same time.</p>
+<p>The <a href="https://en.algorithmica.org/hpc/simd/">Algorithmica web
+book has a section on SIMD parallelism</a> along with <a
+href="http://sci.tuomastonteri.fi/programming/sse">Tuomas Tonteri’s
+blog</a> are some references that will be used for this section, along
+with the <a
+href="https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#techs=AVX_512&amp;ig_expand=21">Intel
+intrinsics reference</a>, which offers descriptions of every intrinsic
+that can be used to access this SIMD functionality. The <a
+href="https://agner.org/optimize/optimizing_cpp.pdf">Agner blog on
+optimizing C++</a> also has a good section on the topic.</p>
+<p>This section will look at fairly simple uses of AVX-512 intrinsics
+for the most part.</p>
+<p>The target code that will be vectorised will be the Taylor series for
+the cosine and exponential functions, seen in the previous section. This
+is where it made the most sense to start, since there were no simple AVX
+intrinsics for dealing with cosine or exponential operations- they
+<em>can</em> be found in the Intel instrinsics reference, however these
+don’t have corresponding instructions, and actually seem to be functions
+written for Intel’s Short Vector Math Library (SVML). There is also
+Intel’s oneAPI toolkit that also provides this functionality somewhere
+inside. This is briefly explored in a subsection, but is not used for
+the tested code.</p>
+<p><br></p>
+<h4 id="mavx-flag">-mavx Flag</h4>
+<p>When compiling with the <code>-mavx</code> flag (but without manaully
+vectorising anything), the compiler emits vector version of some
+instructions, such as moves and multiplications. This can be seen by
+comparing the instructions at the start of the <code>f_simple</code>
+function with and without this flag (with <code>-O3</code>):</p>
+<pre><code>00000000004011e0 &lt;f_simple&gt;:
+  4011e0:   66 0f 28 c8             movapd xmm1,xmm0
+  4011e4:   f2 0f 10 15 84 0e 00    movsd  xmm2,QWORD PTR [rip+0xe84]        # 402070 &lt;__dso_handle+0x68&gt;
+  4011eb:   00
+  4011ec:   f3 0f 7e 25 3c 0e 00    movq   xmm4,QWORD PTR [rip+0xe3c]        # 402030 &lt;__dso_handle+0x28&gt;
+  4011f3:   00
+  4011f4:   f2 0f 59 c8             mulsd  xmm1,xmm0
+  4011f8:   f2 0f 59 d1             mulsd  xmm2,xmm1
+  4011fc:   f2 0f 59 c8             mulsd  xmm1,xmm0
+  401200:   f2 0f 58 15 40 0e 00    addsd  xmm2,QWORD PTR [rip+0xe40] </code></pre>
+<pre><code>00000000004011e0 &lt;f_simple&gt;:
+  4011e0:   c5 fb 59 c8             vmulsd xmm1,xmm0,xmm0
+  4011e4:   c5 fa 7e 25 44 0e 00    vmovq  xmm4,QWORD PTR [rip+0xe44]        # 402030 &lt;__dso_handle+0x28&gt;
+  4011eb:   00
+  4011ec:   c5 f3 59 15 7c 0e 00    vmulsd xmm2,xmm1,QWORD PTR [rip+0xe7c]        # 402070 &lt;__dso_handle+0x68&gt;
+  4011f3:   00
+  4011f4:   c5 eb 58 15 4c 0e 00    vaddsd xmm2,xmm2,QWORD PTR [rip+0xe4c]        # 402048 &lt;__dso_handle+0x40&gt;</code></pre>
+<h5 id="measurement---simple-7">Measurement - Simple</h5>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./simple-main-taylor-o3-mavx.out&#39; (5 runs):
+
+          3,606.90 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.17% )
+                 5      context-switches                 #    1.386 /sec                        ( +- 18.55% )
+                 0      cpu-migrations                   #    0.000 /sec                 
+                74      page-faults                      #   20.516 /sec                        ( +-  1.08% )
+    18,086,939,772      cycles                           #    5.015 GHz                         ( +-  0.05% )  (71.40%)
+        33,414,750      stalled-cycles-frontend          #    0.18% frontend cycles idle        ( +-  3.31% )  (71.41%)
+    36,035,029,568      instructions                     #    1.99  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.01% )  (71.44%)
+     3,007,083,389      branches                         #  833.703 M/sec                       ( +-  0.01% )  (71.45%)
+           869,494      branch-misses                    #    0.03% of all branches             ( +-  1.70% )  (71.45%)
+    11,011,720,042      L1-dcache-loads                  #    3.053 G/sec                       ( +-  0.01% )  (71.44%)
+           400,941      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  6.25% )  (71.42%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+           3.60840 +- 0.00609 seconds time elapsed  ( +-  0.17% )</code></pre>
+<p><code>perf report</code>:</p>
+<pre><code>Samples: 193K of event &#39;cycles:P&#39;, Event count (approx.): 18281519624
+Overhead  Command          Shared Object                   Symbol
+  60.48%  simple-main-tay  simple-main-taylor-o3-mavx.out  [.] f_simple
+  39.29%  simple-main-tay  simple-main-taylor-o3-mavx.out  [.] integral_riemann</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 3694076</code></pre>
+<h5 id="measurement---intermediate-8">Measurement - Intermediate</h5>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./intermediate-main-taylor-o3-mavx.out&#39; (5 runs):
+
+          8,314.72 msec task-clock                       #    1.000 CPUs utilized               ( +-  0.58% )
+                23      context-switches                 #    2.766 /sec                        ( +- 12.78% )
+                 2      cpu-migrations                   #    0.241 /sec                        ( +- 75.17% )
+                76      page-faults                      #    9.140 /sec                        ( +-  1.22% )
+    40,730,214,596      cycles                           #    4.899 GHz                         ( +-  0.10% )  (71.42%)
+     2,527,830,017      stalled-cycles-frontend          #    6.21% frontend cycles idle        ( +- 40.47% )  (71.42%)
+   128,107,924,611      instructions                     #    3.15  insn per cycle       
+                                                  #    0.02  stalled cycles per insn     ( +-  0.01% )  (71.43%)
+    25,027,267,159      branches                         #    3.010 G/sec                       ( +-  0.01% )  (71.44%)
+         1,980,134      branch-misses                    #    0.01% of all branches             ( +-  0.36% )  (71.44%)
+    11,027,966,294      L1-dcache-loads                  #    1.326 G/sec                       ( +-  0.01% )  (71.44%)
+           856,208      L1-dcache-load-misses            #    0.01% of all L1-dcache accesses   ( +-  5.57% )  (71.43%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+            8.3161 +- 0.0480 seconds time elapsed  ( +-  0.58% )</code></pre>
+<p><code>perf report</code>:</p>
+<pre><code>Samples: 452K of event &#39;cycles:P&#39;, Event count (approx.): 41373441281
+Overhead  Command          Shared Object                         Symbol
+  89.43%  intermediate-ma  intermediate-main-taylor-o3-mavx.out  [.] f_intermediate
+  10.32%  intermediate-ma  intermediate-main-taylor-o3-mavx.out  [.] integral_riemann</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 8420865</code></pre>
+<p>An interesting consequence of the generation of these vector
+instruction is that not as many instructions ended up being executed,
+however this did not correspond with comparitively as much of a
+performance boost- indeed, the <code>simple</code> example executed at
+1.99 instructions per cycle vs. 2.27 for the run without
+<code>-mavx</code>, and the <code>intermediate</code> example ran at
+3.15 instructions/second vs the previous run at 5.12.</p>
+<p><br></p>
+<h4 id="avx-512-rewrite">AVX-512 Rewrite</h4>
+<p>This section looks into converting the existing code into a
+vectorised version.</p>
+<h5 id="factorial">Factorial</h5>
+<p>Although entirely unecessary, converting the factorial function to a
+vector version was a fun puzzle exercise in perusing the intrinsics list
+to find useful ones that would help in implementing this
+functionality.</p>
+<p>The algorithm goes something like</p>
+<ul class="incremental">
+<li>Load a 512bit vector containing the numbers from x = 1 -&gt; 12 (the
+maximum supported value for this function), with the unused elements set
+to 1</li>
+<li>Compare the vector to the factorial value argument, and use this to
+generate a vector mask that specifies which elements from the number
+vector to use</li>
+<li>Use the mask to set any unwanted values in the number vector to
+1</li>
+<li>Perform a reduction on the modified number vector, multiplying all
+its elements and summing</li>
+</ul>
+<p>In C, this looks like:</p>
+<div class="sourceCode" id="cb78"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb78-1"><a href="#cb78-1" aria-hidden="true" tabindex="-1"></a><span class="dt">int</span> factorial_int_avx<span class="op">(</span><span class="dt">int</span> x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb78-2"><a href="#cb78-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>x <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb78-3"><a href="#cb78-3" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb78-4"><a href="#cb78-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb78-5"><a href="#cb78-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb78-6"><a href="#cb78-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">const</span> <span class="dt">int</span> all_int_array<span class="op">[</span><span class="dv">16</span><span class="op">]</span> __attribute__ <span class="op">((</span>aligned <span class="op">(</span><span class="dv">64</span><span class="op">)))</span> <span class="op">=</span> <span class="op">{</span><span class="dv">1</span><span class="op">,</span> <span class="dv">2</span><span class="op">,</span> <span class="dv">3</span><span class="op">,</span> <span class="dv">4</span><span class="op">,</span> <span class="dv">5</span><span class="op">,</span> <span class="dv">6</span><span class="op">,</span> <span class="dv">7</span><span class="op">,</span> <span class="dv">8</span><span class="op">,</span> <span class="dv">9</span><span class="op">,</span> <span class="dv">10</span><span class="op">,</span> <span class="dv">11</span><span class="op">,</span> <span class="dv">12</span><span class="op">,</span> <span class="dv">1</span><span class="op">,</span> <span class="dv">1</span><span class="op">,</span> <span class="dv">1</span><span class="op">,</span> <span class="dv">1</span><span class="op">};</span></span>
+<span id="cb78-7"><a href="#cb78-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb78-8"><a href="#cb78-8" aria-hidden="true" tabindex="-1"></a>    __m512i all_ints <span class="op">=</span> _mm512_load_epi32<span class="op">(</span>all_int_array<span class="op">);</span></span>
+<span id="cb78-9"><a href="#cb78-9" aria-hidden="true" tabindex="-1"></a>    __m512i all_ones <span class="op">=</span> _mm512_set1_epi32<span class="op">(</span><span class="dv">1</span><span class="op">);</span></span>
+<span id="cb78-10"><a href="#cb78-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb78-11"><a href="#cb78-11" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Create a vector with all elements set to x, and compare against the all int vector</span></span>
+<span id="cb78-12"><a href="#cb78-12" aria-hidden="true" tabindex="-1"></a>    __m512i x_vec <span class="op">=</span> _mm512_set1_epi32<span class="op">(</span>x<span class="op">);</span></span>
+<span id="cb78-13"><a href="#cb78-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb78-14"><a href="#cb78-14" aria-hidden="true" tabindex="-1"></a>    <span class="co">// This mask selects all elements less or equal to x</span></span>
+<span id="cb78-15"><a href="#cb78-15" aria-hidden="true" tabindex="-1"></a>    __mmask16 factorial_mask <span class="op">=</span> _mm512_cmple_epi32_mask<span class="op">(</span>all_ints<span class="op">,</span> x_vec<span class="op">);</span></span>
+<span id="cb78-16"><a href="#cb78-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb78-17"><a href="#cb78-17" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Set unused elements to 1, then reduce</span></span>
+<span id="cb78-18"><a href="#cb78-18" aria-hidden="true" tabindex="-1"></a>    all_ints <span class="op">=</span> _mm512_mask_blend_epi32<span class="op">(</span>factorial_mask<span class="op">,</span> all_ones<span class="op">,</span> all_ints<span class="op">);</span></span>
+<span id="cb78-19"><a href="#cb78-19" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> _mm512_reduce_mul_epi32<span class="op">(</span>all_ints<span class="op">);</span></span>
+<span id="cb78-20"><a href="#cb78-20" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Out of interest, this was timed against the old implementation using
+the <code>TIME_FUNC</code> macro from the measurement section. The test
+code compares the average time taken to execute each of the factorial
+functions, averaged over 100 million runs (compiled with
+<code>-O3</code>).</p>
+<div class="sourceCode" id="cb79"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb79-1"><a href="#cb79-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb79-2"><a href="#cb79-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> time_res <span class="op">=</span> <span class="dv">0</span><span class="er">.0</span><span class="op">;</span></span>
+<span id="cb79-3"><a href="#cb79-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> time_res_avx <span class="op">=</span> <span class="dv">0</span><span class="er">.0</span><span class="op">;</span></span>
+<span id="cb79-4"><a href="#cb79-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> count <span class="op">=</span> <span class="dv">100000000</span><span class="op">;</span></span>
+<span id="cb79-5"><a href="#cb79-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb79-6"><a href="#cb79-6" aria-hidden="true" tabindex="-1"></a>        time_res <span class="op">+=</span> TIME_FUNC<span class="op">(</span>factorial_int<span class="op">(</span><span class="dv">12</span><span class="op">));</span></span>
+<span id="cb79-7"><a href="#cb79-7" aria-hidden="true" tabindex="-1"></a>        time_res_avx <span class="op">+=</span> TIME_FUNC<span class="op">(</span>factorial_int_avx<span class="op">(</span><span class="dv">12</span><span class="op">));</span></span>
+<span id="cb79-8"><a href="#cb79-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb79-9"><a href="#cb79-9" aria-hidden="true" tabindex="-1"></a>    time_res <span class="op">/=</span> count<span class="op">;</span></span>
+<span id="cb79-10"><a href="#cb79-10" aria-hidden="true" tabindex="-1"></a>    time_res_avx <span class="op">/=</span> count<span class="op">;</span></span>
+<span id="cb79-11"><a href="#cb79-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb79-12"><a href="#cb79-12" aria-hidden="true" tabindex="-1"></a>    printf<span class="op">(</span><span class="st">&quot;Normal: </span><span class="sc">%g</span><span class="st"> | avx: </span><span class="sc">%g\n</span><span class="st">&quot;</span><span class="op">,</span> time_res<span class="op">,</span> time_res_avx<span class="op">);</span></span></code></pre></div>
+<p>The two implementations did not seem to differ very much in execution
+time:</p>
+<pre><code>Normal: 0.0164651 | avx: 0.0164653</code></pre>
+<p>When compiled without <code>-O3</code>, however, the AVX code was
+between 2-3 times slower.</p>
+<p>Despite the results above, when this code was ran in place in of the
+regular factorial code within the <code>f_simple</code> test case, it
+took significantly longer to run overall. The number of
+instructions/cycles taken was higher, but the L1-dcache and L1-icache
+misses and branch misseses seemed less than the code running the
+non-vectorised factorial code.</p>
+<p>Looking at the objdump and Ghidra output, it seemed the compiler had
+a much easier time optimising the case of non-AVX factorial code in
+conjunction with the vectorised Taylor series code.</p>
+<p><br></p>
+<h5 id="taylor-series">Taylor Series</h5>
+<p>The Taylor series functions were adjusted to take a vector of inputs
+and return a vector of the corresponding outputs, i.e. it performs the
+Taylor expansion for each of the input elements.</p>
+<p>The main loop for the cosine expansion was mostly directly translated
+to use vectors instead- note the set up of the <code>pow_sum</code>
+accumulator as a vector with the number <code>1.0</code> for each entry,
+and similarly for the vector of <code>-1.0</code> values.</p>
+<pre><code>  __m512d ret = _mm512_setzero_pd();
+  __m512d negative_1 = _mm512_set1_pd(-1.0);
+  __m512d pow_sum;
+
+  // 6 term expansion
+  int num_terms = 6;
+  for (int i = 0; i &lt; num_terms; i++) {
+
+      pow_sum = _mm512_set1_pd(1.0);
+      for (int n = 0; n &lt; (2 * i); n++) {
+          pow_sum = _mm512_mul_pd(pow_sum, x);
+      }
+
+      // Odd terms have a negative sign
+      if ((i &amp; 1)) {
+          pow_sum = _mm512_mul_pd(pow_sum, negative_1);
+      }
+
+      double factorial_divisor_d = (double)factorial_int(2 * i);
+      __m512d factorial_divisor_vec = _mm512_set1_pd(factorial_divisor_d);
+      pow_sum = _mm512_div_pd(pow_sum, factorial_divisor_vec);
+
+      ret = _mm512_add_pd(ret, pow_sum);
+  }
+  return ret;</code></pre>
+<p>When handling the division of the factorial, the first pass seen
+above performs a division operation on the vector.</p>
+<p>I had some intuition that division instructions were slower than
+multiplication ones, so one optimisation that made sense to make here
+was to work with the inverse of the factorial and perform a
+multiplication on the vector instead:</p>
+<div class="sourceCode" id="cb82"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb82-1"><a href="#cb82-1" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> factorial_divisor_d <span class="op">=</span> <span class="dv">1</span> <span class="op">/</span> <span class="op">(</span><span class="dt">double</span><span class="op">)</span>factorial_int<span class="op">(</span><span class="dv">2</span> <span class="op">*</span> i<span class="op">);</span></span>
+<span id="cb82-2"><a href="#cb82-2" aria-hidden="true" tabindex="-1"></a>__m512d factorial_divisor_vec <span class="op">=</span> _mm512_set1_pd<span class="op">(</span>factorial_divisor_d<span class="op">);</span></span>
+<span id="cb82-3"><a href="#cb82-3" aria-hidden="true" tabindex="-1"></a>pow_sum <span class="op">=</span> _mm512_mul_pd<span class="op">(</span>pow_sum<span class="op">,</span> factorial_divisor_vec<span class="op">);</span></span></code></pre></div>
+<p>This had a fairly dramatic impact on how fast the code ran - ~920,000
+microseconds with the vector division, and ~420,000 microseconds with
+the vector multiplication (these were intermediate measurements made
+when tinkering with various parts of the algorithm).</p>
+<p>The vector version of the Taylor expansion for the exponential
+function was created in almost the exact same way:</p>
+<pre><code>__m512d __attribute__ ((always_inline)) inline taylor_exp(__m512d x) {
+    __m512d ret = _mm512_setzero_pd();
+    __m512d pow_sum;
+
+    int num_terms = 7;
+    for (int i = 0; i &lt; num_terms; i++) {
+        pow_sum = _mm512_set1_pd(1.0);
+        for (int n = 0; n &lt; i; n++) {
+            pow_sum = _mm512_mul_pd(pow_sum, x);
+        }
+
+        double factorial_divisor_d = 1/(double)factorial_int(i);
+        __m512d factorial_divisor_vec = _mm512_set1_pd(factorial_divisor_d);
+        pow_sum = _mm512_mul_pd(pow_sum, factorial_divisor_vec);
+
+        ret = _mm512_add_pd(ret, pow_sum);
+    }
+    return ret;
+}</code></pre>
+<p><br></p>
+<h5 id="riemann-integral">Riemann Integral</h5>
+<p>Vectorisation of the <code>integral_riemann()</code> function was
+undertaken with the goal of performing the summation loop with a full
+512 bit vector of 8 doubles at a time. Since the integrand function now
+takes a vector, an argument vector was constructed for this purpose and
+filled with the first 8 arguments to the integrand (creating an
+assumption that <code>split</code> will be greater than 8). Note the
+alignment requirements for the array is specified by the
+<code>_mm512_load_pd()</code> instrinsic.</p>
+<div class="sourceCode" id="cb84"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb84-1"><a href="#cb84-1" aria-hidden="true" tabindex="-1"></a><span class="dt">unsigned</span> <span class="dt">int</span> num_vals_vec <span class="op">=</span> <span class="kw">sizeof</span><span class="op">(</span>__m512d<span class="op">)/</span><span class="kw">sizeof</span><span class="op">(</span><span class="dt">double</span><span class="op">);</span></span>
+<span id="cb84-2"><a href="#cb84-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb84-3"><a href="#cb84-3" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> vec_args_array<span class="op">[</span><span class="kw">sizeof</span><span class="op">(</span>__m512d<span class="op">)]</span> __attribute__ <span class="op">((</span>aligned <span class="op">(</span><span class="dv">64</span><span class="op">)))</span> <span class="op">=</span> <span class="op">{</span><span class="dv">0</span><span class="op">};</span></span>
+<span id="cb84-4"><a href="#cb84-4" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> cur_val <span class="op">=</span> lower_bound<span class="op">;</span></span>
+<span id="cb84-5"><a href="#cb84-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb84-6"><a href="#cb84-6" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> <span class="op">(</span><span class="dt">unsigned</span> <span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> num_vals_vec<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb84-7"><a href="#cb84-7" aria-hidden="true" tabindex="-1"></a>  vec_args_array<span class="op">[</span>i<span class="op">]</span> <span class="op">=</span> cur_val<span class="op">;</span></span>
+<span id="cb84-8"><a href="#cb84-8" aria-hidden="true" tabindex="-1"></a>  cur_val <span class="op">+=</span> step<span class="op">;</span></span>
+<span id="cb84-9"><a href="#cb84-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb84-10"><a href="#cb84-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb84-11"><a href="#cb84-11" aria-hidden="true" tabindex="-1"></a>__m512d arg_vec <span class="op">=</span> _mm512_load_pd<span class="op">(</span>vec_args_array<span class="op">);</span></span></code></pre></div>
+<p>In the summation loop, the argument vector is incremented by a static
+value to advance it to the next 8 elements. This is done by constructing
+a vector filled with this static value:</p>
+<div class="sourceCode" id="cb85"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb85-1"><a href="#cb85-1" aria-hidden="true" tabindex="-1"></a>__m512d arg_vec_step <span class="op">=</span> _mm512_set1_pd<span class="op">(</span>step <span class="op">*</span> num_vals_vec<span class="op">);</span></span></code></pre></div>
+<p>One potential problem that had to be considered was the ability to
+overshoot/undershoot the upper bound since argument advancements were
+made 8 elements at a time. This was mostly hand-waved away by adjusting
+the <code>split</code> value downwards to be a multiple of 8. Given the
+large <code>split</code> values generally used, this should have a
+negligible effect on accuracy (the tested <code>split</code> value of 1
+billion is already divisible by 8, so really there’s no effect at all
+for the tested case).</p>
+<div class="sourceCode" id="cb86"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb86-1"><a href="#cb86-1" aria-hidden="true" tabindex="-1"></a><span class="dt">unsigned</span> <span class="dt">int</span> split_remainder <span class="op">=</span> <span class="op">(</span><span class="dt">unsigned</span> <span class="dt">int</span><span class="op">)</span>split <span class="op">%</span> num_vals_vec<span class="op">;</span></span>
+<span id="cb86-2"><a href="#cb86-2" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> step <span class="op">=</span> <span class="op">(</span>upper_bound <span class="op">-</span> lower_bound<span class="op">)</span> <span class="op">/</span> <span class="op">(</span>split <span class="op">-</span> <span class="op">(</span><span class="dt">double</span><span class="op">)</span>split_remainder<span class="op">);</span></span></code></pre></div>
+<p>For the main summation loop, a summation vector holds the incremental
+results from each calculation, and the argument vector is advanced to
+the next set of inputs. Note the multiplication of the <code>step</code>
+value was moved to the end of the function to avoid the extra
+unnecessary multiplication in the hot loop. The loop now looked
+like:</p>
+<div class="sourceCode" id="cb87"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb87-1"><a href="#cb87-1" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> <span class="op">(</span><span class="dt">double</span> n <span class="op">=</span> lower_bound<span class="op">;</span> n <span class="op">&lt;</span> upper_bound<span class="op">;</span> n <span class="op">+=</span> <span class="op">(</span>step <span class="op">*</span> <span class="kw">sizeof</span><span class="op">(</span><span class="dt">double</span><span class="op">)))</span> <span class="op">{</span></span>
+<span id="cb87-2"><a href="#cb87-2" aria-hidden="true" tabindex="-1"></a>    sum_vec <span class="op">=</span> _mm512_add_pd<span class="op">(</span>sum_vec<span class="op">,</span> integrand<span class="op">(</span>arg_vec<span class="op">));</span></span>
+<span id="cb87-3"><a href="#cb87-3" aria-hidden="true" tabindex="-1"></a>    arg_vec <span class="op">=</span> _mm512_add_pd<span class="op">(</span>arg_vec<span class="op">,</span> arg_vec_step<span class="op">);</span></span>
+<span id="cb87-4"><a href="#cb87-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>However, because of the argument vector it was no longer required to
+perform an unecessary arithmetic operation to increment <code>n</code>
+since the same operation is already performed on <code>arg_vec</code>,
+and the required value could just be extracted from there (really the
+<code>n</code> variable isn’t needed at all anymore, however it was kept
+for clarity).</p>
+<p>Thus the loop can be adjusted to:</p>
+<div class="sourceCode" id="cb88"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb88-1"><a href="#cb88-1" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> n <span class="op">=</span> lower_bound<span class="op">;</span></span>
+<span id="cb88-2"><a href="#cb88-2" aria-hidden="true" tabindex="-1"></a><span class="cf">while</span> <span class="op">(</span>n <span class="op">&lt;</span> upper_bound<span class="op">)</span> <span class="op">{</span> </span>
+<span id="cb88-3"><a href="#cb88-3" aria-hidden="true" tabindex="-1"></a>    sum_vec <span class="op">=</span> _mm512_add_pd<span class="op">(</span>sum_vec<span class="op">,</span> integrand<span class="op">(</span>arg_vec<span class="op">));</span></span>
+<span id="cb88-4"><a href="#cb88-4" aria-hidden="true" tabindex="-1"></a>    arg_vec <span class="op">=</span> _mm512_add_pd<span class="op">(</span>arg_vec<span class="op">,</span> arg_vec_step<span class="op">);</span></span>
+<span id="cb88-5"><a href="#cb88-5" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> arg_vec<span class="op">[</span><span class="dv">0</span><span class="op">];</span></span>
+<span id="cb88-6"><a href="#cb88-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Finally, a reduction is made on the summation vector to obtain a sum
+of its elements, and a final multiplication by the step value was
+made.</p>
+<div class="sourceCode" id="cb89"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb89-1"><a href="#cb89-1" aria-hidden="true" tabindex="-1"></a>sum <span class="op">=</span> _mm512_reduce_add_pd<span class="op">(</span>sum_vec<span class="op">);</span></span>
+<span id="cb89-2"><a href="#cb89-2" aria-hidden="true" tabindex="-1"></a>sum <span class="op">*=</span> step<span class="op">;</span></span></code></pre></div>
+<h5 id="measurement---simple-8">Measurement - Simple</h5>
+<p>Accuracy is still good:</p>
+<pre><code>Riemann:    0.707107
+Analytical: 0.707107</code></pre>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./simple-main-taylor-o3-vectorised.out&#39; (5 runs):
+
+            415.85 msec task-clock                       #    0.997 CPUs utilized               ( +-  0.29% )
+                 1      context-switches                 #    2.405 /sec                        ( +- 48.99% )
+                 0      cpu-migrations                   #    0.000 /sec                 
+                74      page-faults                      #  177.947 /sec                        ( +-  1.01% )
+     2,037,689,928      cycles                           #    4.900 GHz                         ( +-  0.09% )  (71.35%)
+         5,394,720      stalled-cycles-frontend          #    0.26% frontend cycles idle        ( +-  7.80% )  (71.35%)
+     3,376,218,778      instructions                     #    1.66  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.04% )  (71.36%)
+       375,689,939      branches                         #  903.419 M/sec                       ( +-  0.04% )  (71.36%)
+           135,414      branch-misses                    #    0.04% of all branches             ( +-  2.88% )  (71.49%)
+     1,626,207,583      L1-dcache-loads                  #    3.911 G/sec                       ( +-  0.06% )  (71.61%)
+            60,058      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  4.62% )  (71.48%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+           0.41713 +- 0.00127 seconds time elapsed  ( +-  0.31% )</code></pre>
+<p><code>perf report</code>:</p>
+<pre><code>Samples: 22K of event &#39;cycles:P&#39;, Event count (approx.): 2058542834
+Overhead  Command          Shared Object                         Symbol
+  63.08%  simple-main-tay  simple-main-taylor-o3-vectorised.out  [.] f_simple
+  36.54%  simple-main-tay  simple-main-taylor-o3-vectorised.out  [.] integral_riemann</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 412555</code></pre>
+<p>These are some fairly dramatic results, considering the base case ran
+in <code>6,847,828</code> microseconds. Note that the instructions
+executed per cycle is the lowest seen so far- these vector instructions
+seem to take longer to execute, but work much more efficiently
+overall.</p>
+<p>Significantly fewer branches and L1-dcache loads were made (with
+lower corresponding miss counts), which probably contributed to the
+performance boost.</p>
+<p>Fewer instruction cache misses may also have helped with the
+performance boost. This value was measured using
+<code>perf stat -e L1-icache-loads,L1-icache-misses</code> for the base
+Taylor series example with <code>-O3</code> to compare:</p>
+<pre><code>Performance counter stats for &#39;./taylor-series/simple-main-taylor-o3.out&#39; (5 runs):
+
+            62,150      L1-icache-loads:u                                                       ( +- 15.04% )
+             1,291      L1-icache-misses:u               #    2.08% of all L1-icache accesses   ( +- 13.88% )
+
+            3.6114 +- 0.0185 seconds time elapsed  ( +-  0.51% )</code></pre>
+<p>For the vectorised code:</p>
+<pre><code> Performance counter stats for &#39;./simple-main-taylor-o3-vectorised.out&#39; (5 runs):
+
+            35,134      L1-icache-loads:u                                                       ( +-  0.94% )
+               319      L1-icache-misses:u               #    0.91% of all L1-icache accesses   ( +-  3.17% )
+
+           0.41854 +- 0.00195 seconds time elapsed  ( +-  0.47% )</code></pre>
+<h5 id="measurement---intermediate-9">Measurement - Intermediate</h5>
+<p>Accuracy was the same as the other Taylor series tests:</p>
+<pre><code>Riemann:    0.442617
+Analytical: 0.442619</code></pre>
+<p><code>perf stat</code>:</p>
+<pre><code> Performance counter stats for &#39;./intermediate-main-taylor-o3-vectorised.out&#39; (5 runs):
+
+            558.06 msec task-clock                       #    0.997 CPUs utilized               ( +-  0.35% )
+                 0      context-switches                 #    0.000 /sec                 
+                 0      cpu-migrations                   #    0.000 /sec                 
+                76      page-faults                      #  136.186 /sec                        ( +-  0.53% )
+     2,749,267,305      cycles                           #    4.926 GHz                         ( +-  0.19% )  (71.33%)
+         6,555,087      stalled-cycles-frontend          #    0.24% frontend cycles idle        ( +-  7.34% )  (71.33%)
+     4,753,831,520      instructions                     #    1.73  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.05% )  (71.32%)
+       376,151,059      branches                         #  674.032 M/sec                       ( +-  0.02% )  (71.49%)
+           171,299      branch-misses                    #    0.05% of all branches             ( +-  1.46% )  (71.67%)
+     1,878,630,992      L1-dcache-loads                  #    3.366 G/sec                       ( +-  0.06% )  (71.51%)
+            64,094      L1-dcache-load-misses            #    0.00% of all L1-dcache accesses   ( +-  7.82% )  (71.34%)
+   &lt;not supported&gt;      LLC-loads                                                        
+   &lt;not supported&gt;      LLC-load-misses                                                  
+
+           0.55951 +- 0.00219 seconds time elapsed  ( +-  0.39% )</code></pre>
+<p><code>perf report</code>:</p>
+<pre><code>Samples: 29K of event &#39;cycles:P&#39;, Event count (approx.): 2775757963
+Overhead  Command          Shared Object                               Symbol
+  76.82%  intermediate-ma  intermediate-main-taylor-o3-vectorised.out  [.] f_intermediate
+  22.86%  intermediate-ma  intermediate-main-taylor-o3-vectorised.out  [.] integral_riema</code></pre>
+<p><code>bpftrace</code>:</p>
+<pre><code>Microseconds in Riemann integral: 552366</code></pre>
+<p>This is even more of a dramatic change than the previous one! The
+notes on fewer branches/cache misses are more or less the same as the
+<code>f_simple</code> example.</p>
+<p><br></p>
+<h4 id="comparison-of-some-vector-libraries">Comparison of Some Vector
+Libraries</h4>
+<p>Since operations like trigonometric functions are unavailable as
+intrinsics, it was interesting to explore some libraries that provide
+equivalent functionality using SIMD instructions.</p>
+<p>None of these were incorporated into the test code, instead a small
+program was written for each, with the loose objective of running 2
+billion cosine operations just to have some sort of baseline to compare.
+Performance of these libraries for real workloads could vary
+drastically.</p>
+<p><br></p>
+<h5 id="sleef-vectorised-math-library">Sleef Vectorised Math
+Library</h5>
+<p>The Sleef website provides a <a
+href="https://sleef.org/1-user-guide/">user guide</a> to get up and
+running, and the git repo provides some <a
+href="https://github.com/shibatch/sleef/tree/master/docs/2-references">usage
+references</a>.</p>
+<p>Sleef was available as a package on Fedora 40, and was installed in
+this way. Results may have been different if it were compiled
+manually.</p>
+<p>The only vector size supported by the library appears to be 128
+bits.</p>
+<p>Test code:</p>
+<div class="sourceCode" id="cb100"><pre
+class="sourceCode c"><code class="sourceCode c"><span id="cb100-1"><a href="#cb100-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&lt;sleef.h&gt;</span></span>
+<span id="cb100-2"><a href="#cb100-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb100-3"><a href="#cb100-3" aria-hidden="true" tabindex="-1"></a><span class="pp">#define COUNT </span><span class="dv">1000000000</span></span>
+<span id="cb100-4"><a href="#cb100-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb100-5"><a href="#cb100-5" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> sleef_example<span class="op">()</span> <span class="op">{</span></span>
+<span id="cb100-6"><a href="#cb100-6" aria-hidden="true" tabindex="-1"></a>   __m128d x <span class="op">=</span> <span class="op">{</span>M_PI<span class="op">/</span><span class="dv">4</span><span class="op">,</span> M_PI<span class="op">/</span><span class="dv">8</span><span class="op">};</span></span>
+<span id="cb100-7"><a href="#cb100-7" aria-hidden="true" tabindex="-1"></a>   <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> COUNT<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb100-8"><a href="#cb100-8" aria-hidden="true" tabindex="-1"></a>      x <span class="op">=</span> Sleef_cosd2_u35<span class="op">(</span>x<span class="op">);</span></span>
+<span id="cb100-9"><a href="#cb100-9" aria-hidden="true" tabindex="-1"></a>   <span class="op">}</span></span>
+<span id="cb100-10"><a href="#cb100-10" aria-hidden="true" tabindex="-1"></a>   printf<span class="op">(</span><span class="st">&quot;x: </span><span class="sc">%g\n</span><span class="st">&quot;</span><span class="op">,</span> x<span class="op">[</span><span class="dv">0</span><span class="op">]);</span></span>
+<span id="cb100-11"><a href="#cb100-11" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Compiling:</p>
+<pre><code>$ gcc test.c -mavx -Wall -O3 -lsleef</code></pre>
+<p>Testing:</p>
+<pre><code>$ perf stat -d -r 5 ./a.out
+
+ Performance counter stats for &#39;./a.out&#39; (5 runs):
+
+         15,582.46 msec task-clock:u                     #    1.000 CPUs utilized               ( +-  0.43% )
+                 0      context-switches:u               #    0.000 /sec                 
+                 0      cpu-migrations:u                 #    0.000 /sec                 
+                76      page-faults:u                    #    4.877 /sec                        ( +-  0.64% )
+    77,213,872,587      cycles:u                         #    4.955 GHz                         ( +-  0.01% )  (71.43%)
+        12,905,432      stalled-cycles-frontend:u        #    0.02% frontend cycles idle        ( +-  2.98% )  (71.43%)
+    87,007,752,828      instructions:u                   #    1.13  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.00% )  (71.43%)
+     6,000,880,221      branches:u                       #  385.105 M/sec                       ( +-  0.01% )  (71.43%)
+            42,976      branch-misses:u                  #    0.00% of all branches             ( +-  1.72% )  (71.43%)
+    20,003,368,195      L1-dcache-loads:u                #    1.284 G/sec                       ( +-  0.00% )  (71.42%)
+            31,716      L1-dcache-load-misses:u          #    0.00% of all L1-dcache accesses   ( +- 15.47% )  (71.43%)
+   &lt;not supported&gt;      LLC-loads:u                                                      
+   &lt;not supported&gt;      LLC-load-misses:u                                                
+
+           15.5848 +- 0.0675 seconds time elapsed  ( +-  0.43% )</code></pre>
+<p><br></p>
+<h5 id="intel-oneapi">Intel oneAPI</h5>
+<p>Intel provides several <a
+href="https://www.intel.com/content/www/us/en/developer/tools/oneapi/toolkits.html#gs.i2u2jo">toolkits</a>
+developing applications.</p>
+<p>The <a
+href="https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl.html#gs.i2u3op">Math
+Kernel Library</a> part of this package was used for the test. This
+library has a <a
+href="https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-c/2025-0/overview.html">developer
+reference</a> PDF. There’s quite an overwhelming amount of functionality
+provided with the toolkit.</p>
+<p>Test code:</p>
+<pre><code>#include &lt;mkl.h&gt;
+
+#define COUNT 1000000000
+
+void intel_oneapi_example() {
+   double x[8] = {M_PI/4, M_PI/8, M_PI/4, M_PI/8, M_PI/4, M_PI/8, M_PI/4, M_PI/8};
+   for (int i = 0; i &lt; (COUNT/4); i++) {
+      vdCos(8, x, x);
+   }
+   printf(&quot;x: %g\n&quot;, x[0]);
+}</code></pre>
+<p>Compiling:</p>
+<pre><code>$ icpx -fsycl test.c -Wall -I/opt/intel/oneapi/2025.0/include -L/opt/intel/oneapi/mkl/latest/lib/ -lmkl_core -lpthread -lm -lmkl_intel_lp64 -lmkl_sequential -O3</code></pre>
+<p>Testing:</p>
+<pre><code>$ perf stat -d -r 5 ./a.out
+
+ Performance counter stats for &#39;./a.out&#39; (5 runs):
+
+          8,739.14 msec task-clock:u                     #    1.000 CPUs utilized               ( +-  1.03% )
+                 0      context-switches:u               #    0.000 /sec                 
+                 0      cpu-migrations:u                 #    0.000 /sec                 
+               978      page-faults:u                    #  111.910 /sec                        ( +-  0.06% )
+    42,246,816,822      cycles:u                         #    4.834 GHz                         ( +-  0.13% )  (71.42%)
+       851,872,095      stalled-cycles-frontend:u        #    2.02% frontend cycles idle        ( +-  1.79% )  (71.42%)
+   139,865,949,385      instructions:u                   #    3.31  insn per cycle       
+                                                  #    0.01  stalled cycles per insn     ( +-  0.03% )  (71.43%)
+    13,041,119,650      branches:u                       #    1.492 G/sec                       ( +-  0.02% )  (71.44%)
+           195,799      branch-misses:u                  #    0.00% of all branches             ( +-  7.94% )  (71.44%)
+    40,684,242,524      L1-dcache-loads:u                #    4.655 G/sec                       ( +-  0.09% )  (71.43%)
+           252,424      L1-dcache-load-misses:u          #    0.00% of all L1-dcache accesses   ( +- 14.17% )  (71.42%)
+   &lt;not supported&gt;      LLC-loads:u                                                      
+   &lt;not supported&gt;      LLC-load-misses:u                                                
+
+            8.7403 +- 0.0897 seconds time elapsed  ( +-  1.03% )</code></pre>
+<p><br></p>
+<h5 id="agner-vector-class-library">Agner Vector Class Library</h5>
+<p>Agner’s <a href="https://github.com/vectorclass/version2">vector
+class library</a> for C++ is implemented in a set of headers. The user
+manual can be found <a
+href="https://www.agner.org/optimize/vcl_manual.pdf">here</a>. This
+library includes several helpful functions for performing vector
+operations.</p>
+<p>This was the fastest of the tested libraries for the toy example
+code.</p>
+<p>The test code:</p>
+<div class="sourceCode" id="cb106"><pre
+class="sourceCode c"><code class="sourceCode c"><span id="cb106-1"><a href="#cb106-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&quot;vectormath_trig.h&quot;</span></span>
+<span id="cb106-2"><a href="#cb106-2" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&quot;vectorclass.h&quot;</span></span>
+<span id="cb106-3"><a href="#cb106-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb106-4"><a href="#cb106-4" aria-hidden="true" tabindex="-1"></a><span class="pp">#define COUNT </span><span class="dv">1000000000</span></span>
+<span id="cb106-5"><a href="#cb106-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb106-6"><a href="#cb106-6" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> vectorclass_lib_example<span class="op">()</span> <span class="op">{</span></span>
+<span id="cb106-7"><a href="#cb106-7" aria-hidden="true" tabindex="-1"></a>   Vec8d x<span class="op">(</span>M_PI<span class="op">/</span><span class="dv">4</span><span class="op">,</span> M_PI<span class="op">/</span><span class="dv">8</span><span class="op">,</span> M_PI<span class="op">/</span><span class="dv">4</span><span class="op">,</span> M_PI<span class="op">/</span><span class="dv">8</span><span class="op">,</span> M_PI<span class="op">/</span><span class="dv">4</span><span class="op">,</span> M_PI<span class="op">/</span><span class="dv">8</span><span class="op">,</span> M_PI<span class="op">/</span><span class="dv">4</span><span class="op">,</span> M_PI<span class="op">/</span><span class="dv">8</span><span class="op">);</span></span>
+<span id="cb106-8"><a href="#cb106-8" aria-hidden="true" tabindex="-1"></a>   <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> <span class="op">(</span>COUNT <span class="op">/</span> <span class="dv">4</span><span class="op">);</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb106-9"><a href="#cb106-9" aria-hidden="true" tabindex="-1"></a>      x <span class="op">=</span> cos<span class="op">(</span>x<span class="op">);</span></span>
+<span id="cb106-10"><a href="#cb106-10" aria-hidden="true" tabindex="-1"></a>   <span class="op">}</span></span>
+<span id="cb106-11"><a href="#cb106-11" aria-hidden="true" tabindex="-1"></a>   printf<span class="op">(</span><span class="st">&quot;x: </span><span class="sc">%g\n</span><span class="st">&quot;</span><span class="op">,</span> x<span class="op">[</span><span class="dv">0</span><span class="op">]);</span></span>
+<span id="cb106-12"><a href="#cb106-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Compiling:</p>
+<pre><code>$ g++ test.c -Wall -I{PATH_TO_VECTORCLASS_HEADERS} -O3 -mavx</code></pre>
+<p>Testing:</p>
+<pre><code>$ perf stat -d -r 5 ./a.out
+
+ Performance counter stats for &#39;./a.out&#39; (5 runs):
+
+          2,879.75 msec task-clock:u                     #    0.999 CPUs utilized               ( +-  0.78% )
+                 0      context-switches:u               #    0.000 /sec                 
+                 0      cpu-migrations:u                 #    0.000 /sec                 
+               139      page-faults:u                    #   48.268 /sec                        ( +-  0.18% )
+    14,268,214,657      cycles:u                         #    4.955 GHz                         ( +-  0.03% )  (71.43%)
+         3,339,002      stalled-cycles-frontend:u        #    0.02% frontend cycles idle        ( +-  8.53% )  (71.44%)
+    18,500,034,516      instructions:u                   #    1.30  insn per cycle       
+                                                  #    0.00  stalled cycles per insn     ( +-  0.01% )  (71.43%)
+       250,790,743      branches:u                       #   87.088 M/sec                       ( +-  0.01% )  (71.44%)
+            27,218      branch-misses:u                  #    0.01% of all branches             ( +-  0.67% )  (71.44%)
+     4,251,397,772      L1-dcache-loads:u                #    1.476 G/sec                       ( +-  0.02% )  (71.41%)
+             3,833      L1-dcache-load-misses:u          #    0.00% of all L1-dcache accesses   ( +- 50.75% )  (71.41%)
+   &lt;not supported&gt;      LLC-loads:u                                                      
+   &lt;not supported&gt;      LLC-load-misses:u                                                
+
+            2.8815 +- 0.0228 seconds time elapsed  ( +-  0.79% )</code></pre>
+<hr>
+<h3 id="honorable-mention-memory-access-order">Honorable Mention: Memory
+Access Order</h3>
+<p>This section is a small honorable performance mention that was not
+explored in the test code. It recreates some of the concepts talked
+about in <a href="https://lwn.net/Articles/255364/">Ulrich Drepper’s
+writeups on memory and performance</a>.</p>
+<p>Specifically, we look at how the order of memory access impacts
+performance. The example code will perform an initialisation of and a
+read from a 5000x5000 matrix. The indexes will be varied such that these
+operations are performed each row at a time (sequential memory
+accesses), and then each column at a time ( non sequential memory
+access).</p>
+<p>The code for these operations:</p>
+<div class="sourceCode" id="cb109"><pre
+class="sourceCode c"><code class="sourceCode c"><span id="cb109-1"><a href="#cb109-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#define M_SIZE </span><span class="dv">5000</span></span>
+<span id="cb109-2"><a href="#cb109-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb109-3"><a href="#cb109-3" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> populate_matrix<span class="op">(</span><span class="dt">double</span> matrix<span class="op">[</span>M_SIZE<span class="op">][</span>M_SIZE<span class="op">])</span> <span class="op">{</span></span>
+<span id="cb109-4"><a href="#cb109-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> elem <span class="op">=</span> <span class="fl">1.0</span><span class="op">;</span></span>
+<span id="cb109-5"><a href="#cb109-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> M_SIZE<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb109-6"><a href="#cb109-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> j <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> j <span class="op">&lt;</span> M_SIZE<span class="op">;</span> j<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb109-7"><a href="#cb109-7" aria-hidden="true" tabindex="-1"></a>            matrix<span class="op">[</span>i<span class="op">][</span>j<span class="op">]</span> <span class="op">=</span> elem<span class="op">;</span></span>
+<span id="cb109-8"><a href="#cb109-8" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb109-9"><a href="#cb109-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb109-10"><a href="#cb109-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb109-11"><a href="#cb109-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb109-12"><a href="#cb109-12" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> read_matrix<span class="op">(</span><span class="dt">double</span> matrix<span class="op">[</span>M_SIZE<span class="op">][</span>M_SIZE<span class="op">])</span> <span class="op">{</span></span>
+<span id="cb109-13"><a href="#cb109-13" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> sum <span class="op">=</span> <span class="dv">0</span><span class="er">.0</span><span class="op">;</span></span>
+<span id="cb109-14"><a href="#cb109-14" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> M_SIZE<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb109-15"><a href="#cb109-15" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> j <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> j <span class="op">&lt;</span> M_SIZE<span class="op">;</span> j<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb109-16"><a href="#cb109-16" aria-hidden="true" tabindex="-1"></a>            sum <span class="op">+=</span> matrix<span class="op">[</span>i<span class="op">][</span>j<span class="op">];</span></span>
+<span id="cb109-17"><a href="#cb109-17" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb109-18"><a href="#cb109-18" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb109-19"><a href="#cb109-19" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> sum<span class="op">;</span></span>
+<span id="cb109-20"><a href="#cb109-20" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>These were timed with the <code>TIME_FUNC</code> macro from the
+measurement section. The code shows the case for sequential memory
+access. For this test, the average timing in microseconds for a few runs
+were:</p>
+<pre><code>Populate: 91687 | Read: 70044</code></pre>
+<p>For the column first, non-sequential memory access test (swapping the
+<code>i</code> and <code>j</code> indicies when writing/accessing
+elements in the above code):</p>
+<pre><code>Populate: 146648 | Read: 103563</code></pre>
+<p>As expected, the sequential operations are quite a bit faster. In
+this simple example, it is easy to see how sequential data accesses can
+be done, however it’s not always this obvious and may require other code
+or algorithm modifications. Ulrich goes into an example of how matrix
+multiplications also suffers from this non-sequential data access in the
+naive implementation, and how algorithm modification to using the
+transpose of a matrix helps alleviate it (read the LWN article!).</p>
+<p>Just for fun, an AVX-512 implementation was made for the matrix
+write/reads:</p>
+<div class="sourceCode" id="cb112"><pre
+class="sourceCode c"><code class="sourceCode c"><span id="cb112-1"><a href="#cb112-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> populate_matrix_avx<span class="op">(</span><span class="dt">double</span> matrix<span class="op">[</span>M_SIZE<span class="op">][</span>M_SIZE<span class="op">])</span> <span class="op">{</span></span>
+<span id="cb112-2"><a href="#cb112-2" aria-hidden="true" tabindex="-1"></a>    __m512d elem_vec <span class="op">=</span> _mm512_set1_pd<span class="op">(</span><span class="fl">1.0</span><span class="op">);</span></span>
+<span id="cb112-3"><a href="#cb112-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> M_SIZE<span class="op">;</span> i<span class="op">+=</span> <span class="dv">8</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb112-4"><a href="#cb112-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> j <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> j <span class="op">&lt;</span> M_SIZE<span class="op">;</span> j<span class="op">+=</span><span class="dv">8</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb112-5"><a href="#cb112-5" aria-hidden="true" tabindex="-1"></a>            _mm512_store_pd<span class="op">(&amp;</span>matrix<span class="op">[</span>i<span class="op">][</span>j<span class="op">],</span> elem_vec<span class="op">);</span></span>
+<span id="cb112-6"><a href="#cb112-6" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb112-7"><a href="#cb112-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb112-8"><a href="#cb112-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb112-9"><a href="#cb112-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb112-10"><a href="#cb112-10" aria-hidden="true" tabindex="-1"></a><span class="dt">double</span> read_matrix_avx<span class="op">(</span><span class="dt">double</span> matrix<span class="op">[</span>M_SIZE<span class="op">][</span>M_SIZE<span class="op">])</span> <span class="op">{</span></span>
+<span id="cb112-11"><a href="#cb112-11" aria-hidden="true" tabindex="-1"></a>    <span class="dt">double</span> sum <span class="op">=</span> <span class="dv">0</span><span class="er">.0</span><span class="op">;</span></span>
+<span id="cb112-12"><a href="#cb112-12" aria-hidden="true" tabindex="-1"></a>    __m512d sum_vec <span class="op">=</span> _mm512_setzero_pd<span class="op">();</span></span>
+<span id="cb112-13"><a href="#cb112-13" aria-hidden="true" tabindex="-1"></a>    __m512d elem_vec<span class="op">;</span></span>
+<span id="cb112-14"><a href="#cb112-14" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> M_SIZE<span class="op">;</span> i<span class="op">+=</span> <span class="dv">8</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb112-15"><a href="#cb112-15" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> j <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> j <span class="op">&lt;</span> M_SIZE<span class="op">;</span> j<span class="op">+=</span><span class="dv">8</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb112-16"><a href="#cb112-16" aria-hidden="true" tabindex="-1"></a>            elem_vec <span class="op">=</span> _mm512_load_pd<span class="op">(&amp;</span>matrix<span class="op">[</span>i<span class="op">][</span>j<span class="op">]);</span></span>
+<span id="cb112-17"><a href="#cb112-17" aria-hidden="true" tabindex="-1"></a>            sum_vec <span class="op">=</span> _mm512_add_pd<span class="op">(</span>sum_vec<span class="op">,</span> elem_vec<span class="op">);</span></span>
+<span id="cb112-18"><a href="#cb112-18" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb112-19"><a href="#cb112-19" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb112-20"><a href="#cb112-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb112-21"><a href="#cb112-21" aria-hidden="true" tabindex="-1"></a>    sum <span class="op">=</span> _mm512_reduce_add_pd<span class="op">(</span>sum_vec<span class="op">);</span></span>
+<span id="cb112-22"><a href="#cb112-22" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> sum<span class="op">;</span></span>
+<span id="cb112-23"><a href="#cb112-23" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Note the AVX-512 load/stores required the matrix be allocated on a
+64-byte boundary (such as with <code>aligned_alloc(3)</code>). No
+considerations had to be made for any elements at the end of rows since
+the matrix size was divisible by the vector size.</p>
+<p>The average results of performing sequential accesses were:</p>
+<pre><code>Populate: 11527 | Read: 3587</code></pre>
+<p>With non-sequential access:</p>
+<pre><code>Populate: 17163 | Read: 6869</code></pre>
+<p>These suffered a percentage slowdown with non-sequential access in
+around the same ballpark as the non-AVX code, with the non-sequential
+read operation suffering slightly more (although note, the variance in
+the results was quite large and so probably should be taken with a grain
+of salt).</p>
+<hr>
+<h3 id="results-summary">Results Summary</h3>
+<p>This section records the results for the various tests performed. The
+speed comparison compares run times to the base case with no
+optimisations (lower number is faster).</p>
+<p>In the tables below, <code>Riemann Time</code> is the
+<code>bpftrace</code> measured time of the <code>integral_riemann</code>
+function measured in microseconds, and <code>Speed Comparison</code> is
+the <code>Riemann Time</code> of the test case over the base case. The
+<code>Instructions</code> column measures the amount of instructions
+executed as measured by <code>perf stat</code>.</p>
+<p>The <code>Taylor series -O3 -mavx</code> test compiles with
+<code>-mavx</code> only without manual vectorisation, while
+<code>Taylor series -O3 vector</code> performs vectorisation of the
+Taylor series functions.</p>
+<p>For the <code>f_simple</code> tests:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Optimisation</th>
+<th>Riemann Time</th>
+<th>Speed Comparison</th>
+<th>Instructions</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Base case</td>
+<td>6847828</td>
+<td>1.000</td>
+<td>94,076,906,095</td>
+</tr>
+<tr class="even">
+<td>gcc -O3</td>
+<td>6454392</td>
+<td>0.943</td>
+<td>83,095,613,744</td>
+</tr>
+<tr class="odd">
+<td>Hot loop rewrite</td>
+<td>6764517</td>
+<td>0.988</td>
+<td>91,097,777,304</td>
+</tr>
+<tr class="even">
+<td>Small angle</td>
+<td>5343617</td>
+<td>0.780</td>
+<td>77,191,972,384</td>
+</tr>
+<tr class="odd">
+<td>Small angle positive case</td>
+<td>5080937</td>
+<td>0.742</td>
+<td>71,366,823,827</td>
+</tr>
+<tr class="even">
+<td>Small angle <code>likely()</code></td>
+<td>5012777</td>
+<td>0.732</td>
+<td>73,416,966,946</td>
+</tr>
+<tr class="odd">
+<td>Taylor series -O3</td>
+<td>3701438</td>
+<td>0.541</td>
+<td>41,046,867,512</td>
+</tr>
+<tr class="even">
+<td>Taylor series -O3 -mavx</td>
+<td>3694076</td>
+<td>0.539</td>
+<td>36,035,029,568</td>
+</tr>
+<tr class="odd">
+<td>Taylor series -O3 vector</td>
+<td>412555</td>
+<td>0.060</td>
+<td>3,376,218,778</td>
+</tr>
+</tbody>
+</table>
+<p>For the <code>f_intermediate</code> tests:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Optimisation</th>
+<th>Riemann Time</th>
+<th>Speed Comparison</th>
+<th>Instructions</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Base case</td>
+<td>14846748</td>
+<td>1.000</td>
+<td>235,111,065,770</td>
+</tr>
+<tr class="even">
+<td>gcc -O3</td>
+<td>13707645</td>
+<td>0.923</td>
+<td>228,149,636,174</td>
+</tr>
+<tr class="odd">
+<td>gcc -O3 -ffast-math</td>
+<td>8466576</td>
+<td>0.570</td>
+<td>151,045,821,625</td>
+</tr>
+<tr class="even">
+<td>Hot loop rewrite</td>
+<td>14184865</td>
+<td>0.955</td>
+<td>226,124,658,709</td>
+</tr>
+<tr class="odd">
+<td>Small angle</td>
+<td>14392529</td>
+<td>0.969</td>
+<td>218,235,603,025</td>
+</tr>
+<tr class="even">
+<td>Small angle positive case</td>
+<td>14154213</td>
+<td>0.953</td>
+<td>212,453,637,442</td>
+</tr>
+<tr class="odd">
+<td>Small angle <code>likely()</code></td>
+<td>14004255</td>
+<td>0.943</td>
+<td>214,465,059,223</td>
+</tr>
+<tr class="even">
+<td>Taylor series -O3</td>
+<td>9660417</td>
+<td>0.651</td>
+<td>237,080,118,269</td>
+</tr>
+<tr class="odd">
+<td>Taylor series -O3 -mavx</td>
+<td>8420865</td>
+<td>0.567</td>
+<td>128,107,924,611</td>
+</tr>
+<tr class="even">
+<td>Taylor series -O3 vector</td>
+<td>552366</td>
+<td>0.037</td>
+<td>4,753,831,520</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h3 id="conclusions">Conclusions</h3>
+<p>This exploration into performance techniques barely stratched the
+surface of performance engineering, but it does start to give some
+intuition into the sort of considerations that might be made when
+optimising software Even more importantly, it has resulted in the
+collection of many helpful references.</p>
+<p>It should be noted that the test code that was examined did not cover
+many concepts that are very relevant to performance, such as file I/O
+and network operations. These are saved for future explorations (and to
+avoid dragging out an already long winded series).</p>
+<p>Next, we look at some parallel programming methods.</p>
+<p><br></p>
+<a href="introduction.html">Introduction</a>
+<p style="text-align: right">
+<a href="optimisation-multicore.html">Multicore Optimisations</a>
+</p>
+  <div class="debug-grid"></div>
+  <script src="/index.js"></script>
+</body>
+</html>

