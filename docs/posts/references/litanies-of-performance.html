@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Seb" />
+  <meta name="dcterms.date" content="2024-11-26" />
+  <title>Litanies of Performance</title>
+  <link id="theme" rel="stylesheet" href="/assets/css/dark.css" />
+  <link rel="icon" type="image/png" size="48x48" href="/assets/images/favicon-48x48.png">
+</head>
+<body>
+<table class="header">
+  <tr>
+    <td colspan="2" rowspan="2" class="width-auto">
+      <h1 class="title">Litanies of Performance</h1>
+      <span class="subtitle">(it’s a reference page)</span>
+    </td>
+    <th>Version</th>
+    <td class="width-min">v1.0.0</td>
+  </tr>
+  <tr>
+    <th>Updated</th>
+    <td class="width-min"><time style="white-space: pre;">2024-11-26</time></td>
+  </tr>
+  <tr>
+    <th class="width-min">Author</th>
+    <td class="width-auto"><a href="/"><cite>Seb</cite></a></td>
+    <td colspan="2" style="text-align: left;" class="width-auto"><a href="/">Home</a></td>
+  </tr>
+</table>
+<label class="theme-toggle-label"><input type="checkbox" class="theme-toggle" /> Theme</label>
+<nav id="TOC" role="doc-toc">
+<h2 id="toc-title">Contents</h2>
+<ul class="incremental">
+<li><a href="#introduction" id="toc-introduction">Introduction</a></li>
+<li><a href="#performance-analysis-and-tooling"
+id="toc-performance-analysis-and-tooling">Performance Analysis and
+Tooling</a></li>
+<li><a href="#general-performance-related-things"
+id="toc-general-performance-related-things">General Performance Related
+Things</a></li>
+<li><a href="#hpc-related-technologies"
+id="toc-hpc-related-technologies">HPC Related Technologies</a></li>
+<li><a href="#simd" id="toc-simd">SIMD</a></li>
+<li><a href="#gpu-programming---nvidia-cuda"
+id="toc-gpu-programming---nvidia-cuda">GPU Programming - NVIDIA
+CUDA</a></li>
+<li><a href="#opencl" id="toc-opencl">OpenCL</a></li>
+</ul>
+</nav>
+<h3 id="introduction">Introduction</h3>
+<p>This is a reference page containing links to various resources
+related to software performance. In the past I have found collections of
+resources like this very handy, especially when starting out or
+investigating something new, so hopefully this might be helpful to
+someone too.</p>
+<h3 id="performance-analysis-and-tooling">Performance Analysis and
+Tooling</h3>
+<ul class="incremental">
+<li><p>https://www.amd.com/en/developer/uprof.html</p>
+<ul class="incremental">
+<li>https://docs.amd.com/go/en-US/57368-uProf-user-guide</li>
+</ul></li>
+<li><p>https://www.brendangregg.com</p>
+<ul class="incremental">
+<li>Contains many helpful pages on software performance methodologies
+and tooling. Some are linked below</li>
+<li>https://www.brendangregg.com/linuxperf.html</li>
+<li>https://www.brendangregg.com/perf.html</li>
+<li>https://www.brendangregg.com/ebpf.html</li>
+<li>https://www.brendangregg.com/flamegraphs.html</li>
+</ul></li>
+<li><p>https://github.com/bpftrace/bpftrace</p></li>
+<li><p>https://www.janestreet.com/performance-engineering/</p></li>
+</ul>
+<h3 id="general-performance-related-things">General Performance Related
+Things</h3>
+<ul class="incremental">
+<li><p>https://www.agner.org/optimize/</p>
+<ul class="incremental">
+<li>Another reference sheet for software optimisation topics</li>
+<li>Includes guides for C++/assembly optimisation</li>
+</ul></li>
+<li><p>https://people.freebsd.org/~lstewart/articles/cpumemory.pdf</p>
+<ul class="incremental">
+<li>The classic Ulrich Drepper paper</li>
+</ul></li>
+<li><p>https://lwn.net/Articles/255364/</p>
+<ul class="incremental">
+<li>Part of Ulrich Drepper’s paper, specifically concerning things like
+memory access order and struct layouts (with <code>Pahole</code> usage
+examples)</li>
+</ul></li>
+<li><p>https://fgiesen.wordpress.com</p>
+<ul class="incremental">
+<li>Blog with lots of good posts. Some pages with additional references
+are linked below</li>
+<li>https://fgiesen.wordpress.com/2013/02/17/optimizing-sw-occlusion-culling-index/</li>
+<li>https://fgiesen.wordpress.com/category/papers/</li>
+</ul></li>
+<li><p>https://www.amd.com/content/dam/amd/en/documents/epyc-technical-docs/tuning-guides/58479_amd-epyc-9005-tg-hpc.pdf</p></li>
+<li><p>https://www.intel.com/content/www/us/en/content-details/671488/intel-64-and-ia-32-architectures-optimization-reference-manual-volume-1.html</p></li>
+</ul>
+<h3 id="hpc-related-technologies">HPC Related Technologies</h3>
+<h4 id="openmp">OpenMP</h4>
+<ul class="incremental">
+<li>https://www.openmp.org/wp-content/uploads/omp-hands-on-SC08.pdf</li>
+<li>https://curc.readthedocs.io/en/latest/programming/OpenMP-C.html</li>
+<li>https://hpc-tutorials.llnl.gov/openmp/</li>
+<li>Syntax Reference here
+https://www.openmp.org/wp-content/uploads/OpenMPRefGuide-5.2-Web-2024.pdf</li>
+<li>Comprehensive code examples for OpenMP features
+https://www.openmp.org/wp-content/uploads/openmp-examples-4.5.0.pdf</li>
+</ul>
+<h4 id="openmpi">OpenMPI</h4>
+<ul class="incremental">
+<li>https://www.open-mpi.org/</li>
+<li>https://mpitutorial.com/tutorials/</li>
+<li>https://docs.open-mpi.org/en/main/index.html</li>
+</ul>
+<h3 id="simd">SIMD</h3>
+<p>Contains references for related to Single Instruction Multiple Data
+instructions/intrinsics.</p>
+<h4 id="introductory-resources">Introductory Resources</h4>
+<p>https://en.algorithmica.org/hpc/simd/
+http://sci.tuomastonteri.fi/programming/sse</p>
+<h4 id="libraries">Libraries</h4>
+<ul class="incremental">
+<li>https://sleef.org/</li>
+<li>https://github.com/vectorclass/version2</li>
+</ul>
+<h4 id="general">General</h4>
+<ul class="incremental">
+<li>http://0x80.pl/notesen.html
+<ul class="incremental">
+<li>Software blog with many posts of SIMD optimisations/examples</li>
+</ul></li>
+</ul>
+<h4 id="references">References</h4>
+<ul class="incremental">
+<li>https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html
+<ul class="incremental">
+<li>Table of intrinsics and their details</li>
+</ul></li>
+<li>https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html</li>
+</ul>
+<h3 id="gpu-programming---nvidia-cuda">GPU Programming - NVIDIA
+CUDA</h3>
+<h4 id="introductory-resources-1">Introductory Resources</h4>
+<ul class="incremental">
+<li>https://developer.nvidia.com/blog/even-easier-introduction-cuda/</li>
+<li>https://cuda-tutorial.github.io/part1_22.pdf</li>
+</ul>
+<h4 id="references-1">References</h4>
+<ul class="incremental">
+<li>https://docs.nvidia.com/cuda/
+<ul class="incremental">
+<li>Has links to several reference pages, some are included below</li>
+<li>https://docs.nvidia.com/cuda/cuda-c-programming-guide/</li>
+<li>https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html</li>
+<li>https://docs.nvidia.com/cuda/cuda-runtime-api/index.html</li>
+<li>https://docs.nvidia.com/cuda/cuda-math-api/index.html</li>
+<li>https://docs.nvidia.com/cuda/cublas/index.html</li>
+</ul></li>
+</ul>
+<h3 id="opencl">OpenCL</h3>
+<p>OpenCL can be used to program a variety of devices, including
+GPUs.</p>
+<h4 id="introductory-resources-2">Introductory Resources</h4>
+<ul class="incremental">
+<li>https://leonardoaraujosantos.gitbook.io/opencl/chapter1</li>
+<li>https://ulhpc-tutorials.readthedocs.io/en/latest/gpu/opencl/</li>
+<li>Hands on introduction to OpenCL
+https://www.nersc.gov/assets/pubs_presos/MattsonTutorialSC14.pdf</li>
+</ul>
+<h4 id="references-2">References</h4>
+<ul class="incremental">
+<li>https://github.com/rsnemmen/OpenCL-examples</li>
+<li>OpenCL examples by NVIDIA https://developer.nvidia.com/opencl</li>
+<li>https://www.khronos.org/files/opencl30-reference-guide.pdf</li>
+</ul>
+<p><br></p>
+<p><a href="/">Home</a></p>
+  <div class="debug-grid"></div>
+  <script src="/index.js"></script>
+</body>
+</html>

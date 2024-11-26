@@ -26,6 +26,17 @@ related technologies and techniques.
 
 <hr>
 
+### References
+
+This section contains collections of resources for various topics.
+Surely it will be expanded over time.
+
+#### Litanies of Performance
+
+[Software Performance resources](/posts/references/litanies-of-performance.html)
+
+<hr>
+
 ### Archive
 
 This section holds older posts/goings on from a few years ago. Some have their
