@@ -903,11 +903,11 @@ The code was also compiled with the `-freorder-blocks` flag.
 `perf report`:
 
 ```
-Samples: 263K of event 'cycles:Pu', Event count (approx.): 24178630728
+  Samples: 263K of event 'cycles:Pu', Event count (approx.): 24222008676
 Overhead  Command          Shared Object                           Symbol
-  55.93%  simple-main-sma  simple-main-smallangle-likelymacro.out  [.] integral_riemann
-  31.78%  simple-main-sma  simple-main-smallangle-likelymacro.out  [.] f_simple
-  12.24%  simple-main-sma  libm.so.6                               [.] __cos_fma
+  55.07%  simple-main-sma  simple-main-smallangle-likelymacro.out  [.] integral_riemann
+  25.83%  simple-main-sma  libm.so.6                               [.] __cos_fma
+  19.02%  simple-main-sma  simple-main-smallangle-likelymacro.out  [.] f_simple
 ```
 
 `bpftrace`:

@@ -776,11 +776,11 @@ flag.</p>
 
             4.9435 +- 0.0147 seconds time elapsed  ( +-  0.30% )</code></pre>
 <p><code>perf report</code>:</p>
-<pre><code>Samples: 263K of event &#39;cycles:Pu&#39;, Event count (approx.): 24178630728
+<pre><code>  Samples: 263K of event &#39;cycles:Pu&#39;, Event count (approx.): 24222008676
 Overhead  Command          Shared Object                           Symbol
-  55.93%  simple-main-sma  simple-main-smallangle-likelymacro.out  [.] integral_riemann
-  31.78%  simple-main-sma  simple-main-smallangle-likelymacro.out  [.] f_simple
-  12.24%  simple-main-sma  libm.so.6                               [.] __cos_fma</code></pre>
+  55.07%  simple-main-sma  simple-main-smallangle-likelymacro.out  [.] integral_riemann
+  25.83%  simple-main-sma  libm.so.6                               [.] __cos_fma
+  19.02%  simple-main-sma  simple-main-smallangle-likelymacro.out  [.] f_simple</code></pre>
 <p><code>bpftrace</code>:</p>
 <pre><code>Microseconds in Riemann integral: 5012777</code></pre>
 <h4 id="measurement---intermediate-6">Measurement - Intermediate</h4>
