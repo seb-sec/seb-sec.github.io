@@ -31,9 +31,7 @@ related technologies and techniques.
 This section contains collections of resources for various topics.
 Surely it will be expanded over time.
 
-#### Litanies of Performance
-
-[Software Performance resources](/posts/references/litanies-of-performance.html)
+- [Litanies of Performance](/posts/references/litanies-of-performance.html)
 
 <hr>
 
