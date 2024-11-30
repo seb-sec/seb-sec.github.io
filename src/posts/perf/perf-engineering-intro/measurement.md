@@ -479,7 +479,7 @@ flamegraph.pl out-simple.perf-folded > perf-simple.svg
 Running the tooling against the `f_intermediate` code example yielded the
 following graph:
 
-![Generate Flame Ggraph for f_intermediate](perf-intermediate.svg)
+![Generated Flame Ggraph for f_intermediate](perf-intermediate.svg)
 
 This gives some of the same insights seen with `perf report`, except visually-
 when considering optimisations for the `f_intermediate` function, greater benefits
@@ -586,7 +586,7 @@ Attaching 3 probes...
 ```
 
 Note this took a lot longer to execute than normally running the program or using
-perf- adding overhead to the hottest execution path was not a smart move. to simply outputitng the microsecond count.
+perf- adding overhead to the hottest execution path was not a smart move.
 
 Tracing the Riemann integral function is a better idea- the script was modified
 to do this and compare the two integral functions. Having the histogram also
